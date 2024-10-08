@@ -1,6 +1,6 @@
 use std::{ any::TypeId, marker::PhantomData };
 
-pub const PAGE_SIZE_BYTES: usize = 64;
+pub const PAGE_SIZE_BYTES: usize = 512;
 pub struct PageAllocator {
     memory: Vec<u8>, // Contiguous memory
     page_size: usize, // Size of each page
@@ -62,6 +62,7 @@ impl PageAllocator {
         return self.memory.clone();
     }
     pub fn alloc_fixed<T: 'static>(&mut self) -> Option<FixedDataPtr<T>> {
+    
         let start = self.free_list.pop();
         if let Some(start) = start {
             return Some(FixedDataPtr::new(start));
@@ -90,7 +91,7 @@ impl PageAllocator {
         let start = ptr.page_ptr;
         let new_size = size_of::<U>();
         let end = start + new_size;
-
+        debug_assert!(new_size < PAGE_SIZE_BYTES);
         if end > self.memory.len() {
             panic!("PageAllocator access out of bounds memorySize: {}, wantedSize: {}", self.memory.len(), end);
         }
