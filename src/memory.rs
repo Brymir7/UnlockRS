@@ -7,6 +7,7 @@ pub struct PageAllocator {
     total_pages: usize, // Total number of pages
     free_list: Vec<usize>, // List of free pages (holds offsets)
 }
+#[derive(Debug, Clone, Copy)]
 pub struct FixedDataPtr<T> {
     page_ptr: usize,
     data_size: usize,
@@ -45,6 +46,7 @@ pub struct DynamicDataPtr {
 }
 impl PageAllocator {
     pub fn new(total_size: usize, page_size: usize) -> Self {
+        debug_assert!(total_size > page_size);
         let total_pages = total_size / page_size;
         let mut memory = Vec::with_capacity(total_size);
         memory.resize(total_size, 0); // Fill memory with zeros
@@ -56,16 +58,30 @@ impl PageAllocator {
             free_list,
         }
     }
-
-    pub fn alloc_fixed(&mut self, size: usize) -> Option<FixedDataPtr> {
-        let start_offset = self.free_list.pop()?;
-        Some(FixedDataPtr::new(start_offset))
+    pub fn get_copy_of_state(&self) -> Vec<u8> {
+        return self.memory.clone();
+    }
+    pub fn alloc_fixed<T: 'static>(&mut self) -> Option<FixedDataPtr<T>> {
+        let start = self.free_list.pop();
+        if let Some(start) = start {
+            return Some(FixedDataPtr::new(start));
+        }
+        return None;
     }
 
     pub fn dealloc_fixed<T>(&mut self, ptr: FixedDataPtr<T>) {
         self.free_list.push(ptr.page_ptr);
     }
-
+    pub fn alloc_and_write_fixed<T: Copy + 'static>(
+        &mut self,
+        data: &T
+    ) -> Option<FixedDataPtr<T>> {
+        let ptr = self.alloc_fixed::<T>();
+        if let Some(ptr) = ptr {
+            return Some(self.write_fixed_to_memory(&ptr, data));
+        }
+        return None;
+    }
     pub fn write_fixed_to_memory<T: Copy + 'static, U: 'static>(
         &mut self,
         ptr: &FixedDataPtr<T>,
@@ -76,7 +92,7 @@ impl PageAllocator {
         let end = start + new_size;
 
         if end > self.memory.len() {
-            panic!("Memory access out of bounds");
+            panic!("PageAllocator access out of bounds");
         }
 
         unsafe {
@@ -98,7 +114,7 @@ impl PageAllocator {
         let end = start + ptr.data_size;
 
         if end > self.memory.len() {
-            panic!("Memory access out of bounds");
+            panic!("PageAllocator access out of bounds");
         }
 
         if TypeId::of::<T>() != ptr.type_id {
@@ -111,87 +127,65 @@ impl PageAllocator {
         }
     }
 }
-
 #[cfg(test)]
-pub mod tests {
+mod tests {
     use super::*;
 
-    #[derive(Debug, PartialEq, Clone, Copy)]
-    struct Player {
-        id: u32,
-        health: u32,
+    #[test]
+    fn test_allocation_deallocation() {
+        let mut allocator = PageAllocator::new(1024, PAGE_SIZE_BYTES);
+
+        let ptr1 = allocator.alloc_fixed::<i32>();
+        assert!(ptr1.is_some());
+
+        let ptr2 = allocator.alloc_fixed::<i32>();
+        assert!(ptr2.is_some());
+
+        // Deallocate one page and check if it's reused
+        if let Some(ptr) = ptr1 {
+            allocator.dealloc_fixed(ptr);
+        }
+
+        let recycled_ptr = allocator.alloc_fixed::<i32>();
+        assert!(recycled_ptr.is_some());
+        assert_eq!(ptr1.unwrap().page_ptr, recycled_ptr.unwrap().page_ptr);
     }
 
     #[test]
-    fn test_page_allocator_allocation() {
-        let mut allocator = PageAllocator::new(1024 * 1024, 64);
-        let offset = allocator.alloc(64).expect("Failed to allocate a page");
+    fn test_casting_between_types() {
+        let mut allocator = PageAllocator::new(1024, PAGE_SIZE_BYTES);
+        let ptr = allocator.alloc_fixed::<i32>().unwrap();
 
-        assert!(offset.0 < allocator.total_pages, "Invalid page offset");
+        // Cast to the same type should succeed
+        let casted_ptr = ptr.cast::<i32>();
+        assert!(casted_ptr.is_some());
 
-        allocator.dealloc(offset, 64); // Pass size to dealloc
-        assert_eq!(
-            allocator.free_list.len(),
-            allocator.total_pages,
-            "Page was not deallocated properly"
-        );
+        // Cast to a different type should fail
+        let casted_ptr_fail = ptr.cast::<f64>();
+        assert!(casted_ptr_fail.is_none());
     }
 
     #[test]
-    fn test_write_and_read_struct() {
-        let mut allocator = PageAllocator::new(1024 * 1024, 4096); // 1 MB total, 4KB page size
-        let player = Player { id: 42, health: 200 };
-        let offset = allocator
-            .alloc(std::mem::size_of::<Player>())
-            .expect("Failed to allocate memory for player");
+    fn test_memory_write_and_read() {
+        let mut allocator = PageAllocator::new(1024, PAGE_SIZE_BYTES);
+        let data = 42u32;
 
-        allocator.write_to_memory(offset, &player);
-        let read_player: Player = allocator.read_from_memory(offset);
+        let ptr = allocator.alloc_and_write_fixed(&data);
+        assert!(ptr.is_some());
 
-        assert_eq!(player, read_player, "Written and read Player struct do not match");
-        allocator.dealloc(offset, std::mem::size_of::<Player>()); // Pass size to dealloc
+        if let Some(ptr) = ptr {
+            let read_value = allocator.read_fixed_from_memory(&ptr);
+            assert_eq!(read_value, data);
+        }
     }
 
     #[test]
-    fn test_multiple_allocations() {
-        let mut allocator = PageAllocator::new(1024 * 1024, 4096); // 1 MB total, 4KB page size
-        let offset1 = allocator
-            .alloc(std::mem::size_of::<Player>())
-            .expect("Failed to allocate first page");
-        let offset2 = allocator
-            .alloc(std::mem::size_of::<Player>())
-            .expect("Failed to allocate second page");
+    #[should_panic(expected = "PageAllocator access out of bounds")]
+    fn test_out_of_bounds_access() {
+        let mut allocator = PageAllocator::new(1024, PAGE_SIZE_BYTES);
+        let data = [0u8; 128]; // Larger than a page
 
-        assert!(offset1 != offset2, "Allocated the same page twice");
-
-        let player1 = Player { id: 1, health: 100 };
-        let player2 = Player { id: 2, health: 150 };
-
-        allocator.write_to_memory(offset1, &player1);
-        allocator.write_to_memory(offset2, &player2);
-
-        let read_player1: Player = allocator.read_from_memory(offset1);
-        let read_player2: Player = allocator.read_from_memory(offset2);
-
-        assert_eq!(player1, read_player1, "Player 1 mismatch");
-        assert_eq!(player2, read_player2, "Player 2 mismatch");
-
-        allocator.dealloc(offset1, std::mem::size_of::<Player>()); // Pass size to dealloc
-        allocator.dealloc(offset2, std::mem::size_of::<Player>()); // Pass size to dealloc
-    }
-
-    #[test]
-    fn test_exhaust_all_pages() {
-        let mut allocator = PageAllocator::new(4096 * 2, 4096); // 2 pages total, 4KB page size
-        let offset1 = allocator.alloc(4096).expect("Failed to allocate first page");
-        let offset2 = allocator.alloc(4096).expect("Failed to allocate second page");
-        let offset3 = allocator.alloc(4096);
-
-        assert!(offset3.is_none(), "Allocated more pages than available");
-
-        allocator.dealloc(offset1, 4096); // Pass size to dealloc
-        allocator.dealloc(offset2, 4096); // Pass size to dealloc
-
-        assert_eq!(allocator.free_list.len(), 2, "Not all pages were deallocated");
+        // This should panic because it exceeds the page size
+        allocator.alloc_and_write_fixed(&data);
     }
 }

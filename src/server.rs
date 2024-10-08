@@ -1,7 +1,7 @@
 use std::hash::Hash;
 use std::net::{ SocketAddr, UdpSocket };
 use std::collections::HashMap;
-use types::{ MsgBuffer, ServerPlayerID, ServerRequest, MAX_UDP_PAYLOAD_LEN };
+use types::{ MsgBuffer, ServerPlayerID, NetworkMessage, MAX_UDP_PAYLOAD_LEN };
 mod type_impl;
 mod types;
 struct Server {
@@ -26,13 +26,19 @@ impl Server {
         if !self.addr_to_player.contains_key(&src) {
             self.create_new_connection(&src);
         }
-
+        let msg = self.msg_buffer.parse_message();
+        println!("Received msg {:?}", msg);
+        if let Ok(req) = msg {
+            self.handle_request(req);
+        }
         self.socket.send_to(&mut self.msg_buffer.0[..amt], src).unwrap();
     }
-    pub fn parse_message(&self, buffer: MsgBuffer) -> ServerRequest {
-        let bytes = buffer.0;
-    }
+
     pub fn create_new_connection(&mut self, addr: &SocketAddr) {}
+
+    pub fn handle_request(&self, req: NetworkMessage) {
+
+    }
 }
 
 fn main() -> std::io::Result<()> {

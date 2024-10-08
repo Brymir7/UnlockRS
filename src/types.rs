@@ -1,4 +1,5 @@
 use macroquad::{ color::Color, math::Vec2 };
+
 pub const MAX_UDP_PAYLOAD_LEN: usize = 508; // https://stackoverflow.com/questions/1098897/what-is-the-largest-safe-udp-packet-size-on-the-internet
 pub struct Player {
     pub position: Vec2,
@@ -39,18 +40,22 @@ pub enum PlayerID {
 #[derive(Debug, Copy, Clone)]
 pub struct ServerPlayerID(u8);
 
-pub enum ServerRequest {
-    GetServerPlayerIDs,
-    GetOwnServerPlayerID,
-    GetWorldState,
-    SendWorldState(Simulation),
-    GetPlayerInputs,
-    SendPlayerInputs(Vec<PlayerInput>),
+#[repr(u8)]
+#[derive(Debug)]
+pub enum NetworkMessage {
+    GetServerPlayerIDs = 0,
+    GetOwnServerPlayerID = 1,
+    GetWorldState = 2,
+    SendWorldState(Vec<u8>) = 3,
+    GetPlayerInputs = 4,
+    SendPlayerInputs(Vec<PlayerInput>) = 5,
 }
-
+#[derive(Clone)]
+pub struct SerializedNetworkMessage {
+    pub bytes: Vec<u8>,
+}
+pub struct ChunkedSerializedNetworkMessage {
+    pub chunk_num: u16,
+    pub bytes: [u8; MAX_UDP_PAYLOAD_LEN],
+}
 pub struct MsgBuffer(pub [u8; MAX_UDP_PAYLOAD_LEN]);
-
-pub enum ServerRequestParsedBytesResult {
-    WorldState(Simulation),
-    PlayerInput(Vec<PlayerInput>),
-}

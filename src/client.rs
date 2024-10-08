@@ -1,8 +1,10 @@
 use std::{ io, net::UdpSocket };
 use client_conn::ConnectionServer;
 use macroquad::prelude::*;
+use memory::{ PageAllocator, PAGE_SIZE_BYTES };
 use types::{ Bullet, Enemy, Player, PlayerID, PlayerInput, ServerPlayerID, Simulation };
 mod types;
+mod type_impl;
 mod client_conn;
 mod memory;
 impl Player {
@@ -60,7 +62,7 @@ impl Enemy {
 }
 
 impl Simulation {
-    fn new() -> Self {
+    fn new(memory: &mut PageAllocator) -> Self {
         Self {
             player1: Player::new(100.0, BLUE),
             player2: Player::new(screen_width() - 100.0, GREEN),
@@ -72,8 +74,8 @@ impl Simulation {
     fn update(
         &mut self,
         dt: f32,
-        player1_inputs: Vec<PlayerInput>,
-        player2_inputs: Vec<PlayerInput>
+        player1_inputs: &Vec<PlayerInput>,
+        player2_inputs: &Vec<PlayerInput>
     ) {
         self.handle_player_input(PlayerID::Player1, &player1_inputs);
         self.handle_player_input(PlayerID::Player2, &player2_inputs);
@@ -153,11 +155,11 @@ impl Simulation {
     }
 }
 
-
 #[macroquad::main("2 Player Cube Shooter")]
 async fn main() {
+    let mut allocator = PageAllocator::new(1024 * 1024, PAGE_SIZE_BYTES);
     let mut simulation: Simulation;
-    let connection = ConnectionServer::new().expect("Failed to connect to server, try again!");
+    let mut connection = ConnectionServer::new().expect("Failed to connect to server, try again!");
     println!("Do you want to host or join? (h/j)");
     let mut input = String::new();
     loop {
@@ -165,11 +167,13 @@ async fn main() {
         let choice = input.trim();
         match choice {
             "h" => {
-                simulation = Simulation::new();
+                simulation = Simulation::new(&mut allocator);
                 break;
             }
             "j" => {
-                let other_worlds = connection.get_available_player_worlds();
+                let other_worlds = connection
+                    .get_available_player_worlds()
+                    .expect("Didn't find any worlds to join!");
                 println!("{:?}", other_worlds);
                 println!("Which player do you want to connect to? Press 0-9 to get the player");
                 let other_player_id: ServerPlayerID;
@@ -186,7 +190,9 @@ async fn main() {
                         _ => println!("Invalid choice. Please press 0-9 to select a player."),
                     }
                 }
-                simulation = connection.connect_to_other_world(other_player_id);
+                simulation = connection
+                    .connect_to_other_world(other_player_id, &mut allocator)
+                    .expect("Failed to load other player's world.");
                 break;
             }
             _ => {
@@ -195,10 +201,10 @@ async fn main() {
             }
         }
     }
-
+    let mut player1_inputs = Vec::new();
     loop {
         let dt = get_frame_time();
-        let mut player1_inputs = Vec::new();
+        player1_inputs.clear();
         if is_key_down(KeyCode::A) {
             player1_inputs.push(PlayerInput::Left);
         }
@@ -210,8 +216,11 @@ async fn main() {
         }
 
         let mut player2_inputs = Vec::new();
-        simulation.update(dt, player1_inputs, player2_inputs);
+        simulation.update(dt, &player1_inputs, &player2_inputs);
 
+        connection
+            .send_player_inputs(&player1_inputs)
+            .expect("Socket should be setup before sending!");
         clear_background(BLACK);
         simulation.draw();
 
