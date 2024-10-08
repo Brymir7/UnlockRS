@@ -2,7 +2,18 @@ use std::{ io, net::UdpSocket };
 use client_conn::ConnectionServer;
 use macroquad::prelude::*;
 use memory::{ PageAllocator, PAGE_SIZE_BYTES };
-use types::{ Bullet, Enemy, Player, PlayerID, PlayerInput, ServerPlayerID, Simulation };
+use types::{
+    Bullet,
+    Enemy,
+    Player,
+    PlayerID,
+    PlayerInput,
+    ServerPlayerID,
+    Simulation,
+    SimulationDataMut,
+    MAX_BULLETS,
+    MAX_ENEMIES,
+};
 mod types;
 mod type_impl;
 mod client_conn;
@@ -13,7 +24,13 @@ impl Player {
             position: vec2(x, screen_height() - 50.0),
             speed: 300.0,
             color,
-            bullets: Vec::new(),
+            bullets: [
+                Bullet {
+                    position: Vec2::new(-5.0, -5.0),
+                    velocity: vec2(0.0, 0.0),
+                };
+                MAX_BULLETS
+            ],
             movement_input: 0.0,
             shoot_input: false,
         }
@@ -21,19 +38,16 @@ impl Player {
 
     fn update(&mut self, dt: f32) {
         self.position.x += self.movement_input * self.speed * dt;
-
         if self.shoot_input {
-            self.bullets.push(Bullet {
-                position: self.position,
-                velocity: vec2(0.0, -500.0),
-            });
+            // self.bullets.push(Bullet {
+            //     position: self.position,
+            //     velocity: vec2(0.0, -500.0),
+            // });
         }
-
         for bullet in &mut self.bullets {
             bullet.position += bullet.velocity * dt;
         }
-
-        self.bullets.retain(|bullet| bullet.position.y > 0.0);
+        // self.bullets.retain(|bullet| bullet.position.y > 0.0);
     }
 
     fn draw(&self) {
@@ -51,89 +65,78 @@ impl Enemy {
             position: vec2(x, y),
         }
     }
-
     fn update(&mut self, dt: f32) {
         self.position.y += 100.0 * dt;
     }
-
     fn draw(&self) {
         draw_rectangle(self.position.x - 20.0, self.position.y - 20.0, 40.0, 40.0, RED);
     }
 }
 
 impl Simulation {
-    fn new(memory: &mut PageAllocator) -> Self {
+    fn new(alloc: &mut PageAllocator) -> Self {
+        let player_ptr = alloc
+            .alloc_and_write_fixed(&Player::new(100.0, BLUE))
+            .expect("Failed to alloc player");
+        let enemies_arr_ptr = alloc
+            .alloc_and_write_fixed(&[Enemy::new(-5.0, -5.0); MAX_ENEMIES as usize])
+            .expect("Failed to alloc enemies");
+        let spawn_timer_ptr = alloc
+            .alloc_and_write_fixed(&get_time())
+            .expect("Failed to alloc spawn timer");
         Self {
-            player1: Player::new(100.0, BLUE),
-            player2: Player::new(screen_width() - 100.0, GREEN),
-            enemies: Vec::new(),
-            spawn_timer: get_time(),
+            player1: player_ptr,
+            player2: player_ptr,
+            enemies: enemies_arr_ptr,
+            spawn_timer: spawn_timer_ptr,
         }
     }
+    fn new_from_serialized(data: Vec<u8>, alloc: &mut PageAllocator) {}
+
+    fn add_player(&self, alloc: &mut PageAllocator) {}
 
     fn update(
-        &mut self,
+        &self,
         dt: f32,
         player1_inputs: &Vec<PlayerInput>,
-        player2_inputs: &Vec<PlayerInput>
+        player2_inputs: &Vec<PlayerInput>,
+        alloc: &mut PageAllocator
     ) {
-        self.handle_player_input(PlayerID::Player1, &player1_inputs);
-        self.handle_player_input(PlayerID::Player2, &player2_inputs);
+        self.handle_player_input(PlayerID::Player1, &player1_inputs, alloc);
+        self.handle_player_input(PlayerID::Player2, &player2_inputs, alloc);
+        let player1 = alloc.mut_read_fixed(&self.player1);
+        player1.update(dt);
+        let player2 = alloc.mut_read_fixed(&self.player2);
+        player2.update(dt);
+        let spawn_timer = alloc.mut_read_fixed(&self.spawn_timer);
+        if get_time() - *spawn_timer > 1.0 {
+            // add enemy
 
-        self.player1.update(dt);
-        self.player2.update(dt);
-
-        if get_time() - self.spawn_timer > 1.0 {
-            self.enemies.push(Enemy::new(rand::gen_range(20.0, screen_width() - 20.0), -40.0));
-            self.spawn_timer = get_time();
-        }
-
-        for enemy in &mut self.enemies {
-            enemy.update(dt);
-        }
-
-        for player in [&mut self.player1, &mut self.player2].iter_mut() {
-            player.bullets.retain(|bullet| {
-                let mut hit = false;
-                self.enemies.retain(|enemy| {
-                    if bullet.position.distance(enemy.position) < 20.0 {
-                        hit = true;
-                        false
-                    } else {
-                        true
-                    }
-                });
-                !hit
-            });
-        }
-
-        if self.enemies.iter().any(|e| e.position.y > screen_height()) {
-            draw_text(
-                "Game Over!",
-                screen_width() / 2.0 - 100.0,
-                screen_height() / 2.0,
-                50.0,
-                WHITE
-            );
+            *spawn_timer = get_time();
         }
     }
 
-    fn draw(&self) {
-        self.player1.draw();
-        self.player2.draw();
-        for enemy in &self.enemies {
+    fn draw(&self, alloc: &PageAllocator) {
+        alloc.read_fixed(&self.player1).draw();
+        alloc.read_fixed(&self.player2).draw();
+        for enemy in &alloc.read_fixed(&self.enemies) {
             enemy.draw();
         }
     }
 
-    fn handle_player_input(&mut self, player: PlayerID, inputs: &Vec<PlayerInput>) {
+    fn handle_player_input(
+        &self,
+        player: PlayerID,
+        inputs: &Vec<PlayerInput>,
+        alloc: &mut PageAllocator
+    ) {
         let player_to_change: &mut Player;
         match player {
             PlayerID::Player1 => {
-                player_to_change = &mut self.player1;
+                player_to_change = alloc.mut_read_fixed(&self.player1);
             }
             PlayerID::Player2 => {
-                player_to_change = &mut self.player2;
+                player_to_change = alloc.mut_read_fixed(&self.player2);
             }
         }
         player_to_change.movement_input = 0.0;
@@ -157,7 +160,7 @@ impl Simulation {
 
 #[macroquad::main("2 Player Cube Shooter")]
 async fn main() {
-    let mut allocator = PageAllocator::new(1024 * 1024, PAGE_SIZE_BYTES);
+    let mut allocator = PageAllocator::new(1024 * 1024 * 1, PAGE_SIZE_BYTES);
     let mut simulation: Simulation;
     let mut connection = ConnectionServer::new().expect("Failed to connect to server, try again!");
     println!("Do you want to host or join? (h/j)");
@@ -214,15 +217,14 @@ async fn main() {
         if is_key_pressed(KeyCode::W) {
             player1_inputs.push(PlayerInput::Shoot);
         }
-
         let mut player2_inputs = Vec::new();
-        simulation.update(dt, &player1_inputs, &player2_inputs);
+        simulation.update(dt, &player1_inputs, &player2_inputs, &mut allocator);
 
         connection
             .send_player_inputs(&player1_inputs)
             .expect("Socket should be setup before sending!");
         clear_background(BLACK);
-        simulation.draw();
+        simulation.draw(&allocator);
 
         next_frame().await;
     }

@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use types::{ MsgBuffer, ServerPlayerID, NetworkMessage, MAX_UDP_PAYLOAD_LEN };
 mod type_impl;
 mod types;
+mod memory;
 struct Server {
     socket: UdpSocket,
     addr_to_player: HashMap<SocketAddr, ServerPlayerID>,
@@ -36,9 +37,7 @@ impl Server {
 
     pub fn create_new_connection(&mut self, addr: &SocketAddr) {}
 
-    pub fn handle_request(&self, req: NetworkMessage) {
-
-    }
+    pub fn handle_request(&self, req: NetworkMessage) {}
 }
 
 fn main() -> std::io::Result<()> {

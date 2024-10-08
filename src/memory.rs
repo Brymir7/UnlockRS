@@ -92,7 +92,7 @@ impl PageAllocator {
         let end = start + new_size;
 
         if end > self.memory.len() {
-            panic!("PageAllocator access out of bounds");
+            panic!("PageAllocator access out of bounds memorySize: {}, wantedSize: {}", self.memory.len(), end);
         }
 
         unsafe {
@@ -109,7 +109,7 @@ impl PageAllocator {
         }
     }
 
-    pub fn read_fixed_from_memory<T: Copy + 'static>(&self, ptr: &FixedDataPtr<T>) -> T {
+    pub fn read_fixed<T: Copy + 'static>(&self, ptr: &FixedDataPtr<T>) -> T {
         let start = ptr.page_ptr;
         let end = start + ptr.data_size;
 
@@ -124,6 +124,24 @@ impl PageAllocator {
         unsafe {
             let src = self.memory[start..end].as_ptr() as *const T;
             std::ptr::read(src)
+        }
+    }
+
+    pub fn mut_read_fixed<T: Copy + 'static>(&mut self, ptr: &FixedDataPtr<T>) -> &mut T {
+        let start = ptr.page_ptr;
+        let end = start + ptr.data_size;
+
+        if end > self.memory.len() {
+            panic!("PageAllocator access out of bounds");
+        }
+
+        if TypeId::of::<T>() != ptr.type_id {
+            panic!("Type mismatch: trying to read a different type than what was stored");
+        }
+
+        unsafe {
+            let src = self.memory.as_mut_ptr().add(start) as *mut T;
+            &mut *src
         }
     }
 }
@@ -174,7 +192,7 @@ mod tests {
         assert!(ptr.is_some());
 
         if let Some(ptr) = ptr {
-            let read_value = allocator.read_fixed_from_memory(&ptr);
+            let read_value = allocator.read_fixed(&ptr);
             assert_eq!(read_value, data);
         }
     }
