@@ -61,8 +61,13 @@ impl PageAllocator {
     pub fn get_copy_of_state(&self) -> Vec<u8> {
         return self.memory.clone();
     }
+    pub fn set_memory(&mut self, data: &[u8]) {
+        self.memory = Vec::new();
+        self.memory.extend_from_slice(data);
+    }
+
     pub fn alloc_fixed<T: 'static>(&mut self) -> Option<FixedDataPtr<T>> {
-    
+        debug_assert!(std::mem::size_of::<T>() < PAGE_SIZE_BYTES, "no allocation across pages");
         let start = self.free_list.pop();
         if let Some(start) = start {
             return Some(FixedDataPtr::new(start));
@@ -93,7 +98,11 @@ impl PageAllocator {
         let end = start + new_size;
         debug_assert!(new_size < PAGE_SIZE_BYTES);
         if end > self.memory.len() {
-            panic!("PageAllocator access out of bounds memorySize: {}, wantedSize: {}", self.memory.len(), end);
+            panic!(
+                "PageAllocator access out of bounds memorySize: {}, wantedSize: {}",
+                self.memory.len(),
+                end
+            );
         }
 
         unsafe {

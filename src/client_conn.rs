@@ -7,6 +7,7 @@ use crate::{
         MsgBuffer,
         NetworkMessage,
         PlayerInput,
+        SeqNum,
         SerializedNetworkMessage,
         ServerPlayerID,
         Simulation,
@@ -18,9 +19,8 @@ const RETRY_TIMEOUT: Duration = Duration::from_millis(100);
 
 pub struct ConnectionServer {
     socket: UdpSocket,
-    sequence_number: u32,
-    pending_acks: HashMap<u32, (Instant, SerializedNetworkMessage)>,
-    received_acks: Vec<u32>,
+    sequence_number: u8,
+    pending_acks: HashMap<SeqNum, (Instant, SerializedNetworkMessage)>,
     buffer: MsgBuffer,
 }
 
@@ -34,7 +34,6 @@ impl ConnectionServer {
             socket,
             sequence_number: 0,
             pending_acks: HashMap::new(),
-            received_acks: Vec::new(),
             buffer: MsgBuffer::default(),
         })
     }
@@ -45,17 +44,17 @@ impl ConnectionServer {
     }
 
     pub fn send_unreliable(&self, request: &NetworkMessage) -> Result<(), std::io::Error> {
-        let serialized = request.serialize();
+        let serialized = request.serialize(crate::types::NetworkMessageType::Unreliable);
         self.socket.send(&serialized.bytes)?;
         Ok(())
     }
 
     pub fn send_reliable(&mut self, request: &NetworkMessage) -> Result<(), std::io::Error> {
-        let mut serialized = request.serialize();
-        serialized.bytes.insert(0, 1); // Reliable flag
-        serialized.bytes.insert(1, self.sequence_number as u8);
+        let serialized = request.serialize(
+            crate::types::NetworkMessageType::Reliable(SeqNum(self.sequence_number))
+        );
         self.socket.send(&serialized.bytes)?;
-        self.pending_acks.insert(self.sequence_number, (Instant::now(), serialized));
+        self.pending_acks.insert(SeqNum(self.sequence_number), (Instant::now(), serialized));
         self.sequence_number = self.sequence_number.wrapping_add(1);
         Ok(())
     }
@@ -65,12 +64,18 @@ impl ConnectionServer {
             self.buffer.clear();
             match self.socket.recv(&mut self.buffer.0) {
                 Ok(amt) if amt > 0 => {
-                    if let Ok(request) = self.buffer.parse_message() {
+                    if let Ok(request) = self.buffer.parse_on_client() {
                         match request {
                             // maybe using the same parsing logic is bad security wise
                             NetworkMessage::SendWorldState(data) => {}
                             NetworkMessage::SendPlayerInputs(inputs) => {
                                 self.handle_recv_player_inputs(inputs);
+                            }
+                            NetworkMessage::ServerSideAck(type_of_ack) => {
+                                self.handle_ack(type_of_ack);
+                            }
+                            NetworkMessage::SendServerPlayerIDs(ids) => {
+                                println!("received server player ids {:?}", ids);
                             }
                             _ => {}
                         }
@@ -94,7 +99,9 @@ impl ConnectionServer {
     fn handle_recv_player_inputs(&mut self, inputs: Vec<PlayerInput>) {
         todo!()
     }
-
+    fn handle_ack(&mut self, type_of_ack: SeqNum) {
+        self.pending_acks.remove(&type_of_ack);
+    }
     fn handle_retransmissions(&mut self) {
         let now = Instant::now();
         let mut to_retry = Vec::new();
@@ -109,7 +116,7 @@ impl ConnectionServer {
             if let Some((ref mut sent_time, _)) = self.pending_acks.get_mut(&seq) {
                 *sent_time = now;
                 if let Err(e) = self.socket.send(&request.bytes) {
-                    eprintln!("Failed to resend message {}: {}", seq, e);
+                    eprintln!("Failed to resend message {:?}: {}", seq, e);
                 }
             }
         }
@@ -128,11 +135,9 @@ impl ConnectionServer {
         self.send_reliable(&request)
     }
 
-    pub fn get_available_player_worlds(&mut self) -> Result<Vec<ServerPlayerID>, std::io::Error> {
+    pub fn get_available_player_worlds(&mut self) {
         let request = NetworkMessage::GetServerPlayerIDs;
-        self.send_reliable(&request)?;
-        todo!();
-        Ok(vec![])
+        self.send_reliable(&request);
     }
 
     pub fn connect_to_other_world(

@@ -1,10 +1,17 @@
 use crate::types::{
     MsgBuffer,
+    NetworkMessage,
+    NetworkMessageType,
     Player,
     PlayerInput,
+    SeqNum,
     SerializedNetworkMessage,
-    NetworkMessage,
+    ServerSideMessage,
+    AMT_RANDOM_BYTES,
+    DATA_BIT_START_POS,
     MAX_UDP_PAYLOAD_LEN,
+    RELIABLE_FLAG_BIT_POS,
+    SEQ_NUM_BIT_POS,
 };
 
 impl MsgBuffer {
@@ -14,13 +21,46 @@ impl MsgBuffer {
     pub fn clear(&mut self) {
         self.0 = [0; MAX_UDP_PAYLOAD_LEN];
     }
-    pub fn parse_message(&self) -> Result<NetworkMessage, &'static str> {
+    pub fn parse_on_server(&self) -> Result<ServerSideMessage, &'static str> {
         let bytes = &self.0;
 
         if bytes.is_empty() {
             return Err("Empty buffer");
         }
-        let discriminator = bytes[0];
+
+        let reliable = bytes[RELIABLE_FLAG_BIT_POS] > 0;
+        let seq_num = if reliable { Some(SeqNum(bytes[SEQ_NUM_BIT_POS])) } else { None };
+        let discriminator = bytes[DATA_BIT_START_POS];
+        let message = NetworkMessage::try_from(discriminator)?;
+        let parsed_message = match message {
+            NetworkMessage::SendWorldState(_) => {
+                let data = bytes[DATA_BIT_START_POS + 1..].to_vec();
+                NetworkMessage::SendWorldState(data)
+            }
+            NetworkMessage::SendPlayerInputs(_) => {
+                let player_inputs = Self::parse_player_inputs(&bytes[DATA_BIT_START_POS + 1..]);
+                NetworkMessage::SendPlayerInputs(player_inputs)
+            }
+            _ => message,
+        };
+
+        let server_side_message = if reliable {
+            ServerSideMessage::from_reliable_msg(
+                parsed_message,
+                seq_num.map(|s| s.0)
+            )
+        } else {
+            ServerSideMessage::from_unreliable_msg(parsed_message)
+        };
+        Ok(server_side_message)
+    }
+    pub fn parse_on_client(&self) -> Result<NetworkMessage, &'static str> {
+        let bytes = &self.0;
+
+        if bytes.is_empty() {
+            return Err("Empty buffer");
+        }
+        let discriminator = bytes[DATA_BIT_START_POS];
         let request = NetworkMessage::try_from(discriminator)?;
         match request {
             NetworkMessage::SendWorldState(_) => {
@@ -31,7 +71,11 @@ impl MsgBuffer {
                 let player_inputs = Self::parse_player_inputs(&bytes[1..]);
                 Ok(NetworkMessage::SendPlayerInputs(player_inputs))
             }
-            _ => Ok(request), // For variants without data
+            NetworkMessage::SendServerPlayerIDs(_) => {
+                let ids: Vec<u8> = bytes[1..].to_vec();
+                Ok(NetworkMessage::SendServerPlayerIDs(ids))
+            }
+            _ => Ok(request),
         }
     }
     fn parse_player_inputs(bytes: &[u8]) -> Vec<PlayerInput> {
@@ -52,11 +96,41 @@ impl MsgBuffer {
         return res;
     }
 }
-use rand::Rng;
+impl ServerSideMessage {
+    fn from_reliable_msg(msg: NetworkMessage, seq_num: Option<u8>) -> Self {
+        ServerSideMessage {
+            reliable: true,
+            seq_num,
+            msg: msg,
+        }
+    }
+    fn from_unreliable_msg(msg: NetworkMessage) -> Self {
+        ServerSideMessage {
+            reliable: false,
+            seq_num: None,
+            msg: msg,
+        }
+    }
+}
+use rand::{ Rng };
 impl NetworkMessage {
-    pub fn serialize(&self) -> SerializedNetworkMessage {
+    pub fn serialize(&self, msg_type: NetworkMessageType) -> SerializedNetworkMessage {
         let mut rng = rand::thread_rng();
-        let mut bytes: Vec<u8> = (0..3).map(|_| rng.gen()).collect(); // First few random bytes (3 bytes in this example)
+        let mut bytes: Vec<u8> = Vec::new();
+        let random_bytes: Vec<u8> = (0..AMT_RANDOM_BYTES).map(|_| rng.gen()).collect(); // First few random bytes (3 bytes in this example)
+        bytes.extend(random_bytes);
+        match msg_type {
+            NetworkMessageType::Reliable(seq_num) => {
+                bytes.push(1); // true
+                bytes.push(seq_num.0);
+                debug_assert!(bytes[RELIABLE_FLAG_BIT_POS] == 1);
+                debug_assert!(bytes[SEQ_NUM_BIT_POS] == seq_num.0);
+            }
+            NetworkMessageType::Unreliable => {
+                bytes.push(0);
+                debug_assert!(bytes[RELIABLE_FLAG_BIT_POS] == 0);
+            }
+        }
 
         match *self {
             Self::SendWorldState(ref sim) => {
@@ -67,6 +141,18 @@ impl NetworkMessage {
                 bytes.push(NetworkMessage::SendPlayerInputs as u8); // enum bit
                 let packed_inputs = Self::pack_player_inputs(inp);
                 bytes.push(packed_inputs); // append packed inputs
+            }
+            Self::ServerSideAck(ref seq_num) => {
+                bytes.push(NetworkMessage::ServerSideAck as u8);
+                bytes.push(seq_num.0); // if server sends this, we cannot use the same ACK sequence number that we use for sending from client, because the ACK can also fail
+            }
+            Self::ClientSideAck(ref seq_num) => {
+                bytes.push(NetworkMessage::ClientSideAck as u8);
+                bytes.push(seq_num.0);
+            }
+            Self::SendServerPlayerIDs(ref ids) => {
+                bytes.push(NetworkMessage::SendServerPlayerIDs as u8);
+                bytes.extend(ids);
             }
             _ => {
                 bytes.push(u8::from(self));
@@ -104,6 +190,9 @@ impl From<&NetworkMessage> for u8 {
             NetworkMessage::SendWorldState(_) => 3,
             NetworkMessage::GetPlayerInputs => 4,
             NetworkMessage::SendPlayerInputs(_) => 5,
+            NetworkMessage::ServerSideAck(_) => 6,
+            NetworkMessage::ClientSideAck(_) => 7,
+            NetworkMessage::SendServerPlayerIDs(_) => 8,
         }
     }
 }
@@ -120,7 +209,10 @@ impl TryFrom<u8> for NetworkMessage {
             3 => Ok(NetworkMessage::SendWorldState(Vec::new())), // Provide default or placeholder
             4 => Ok(NetworkMessage::GetPlayerInputs),
             5 => Ok(NetworkMessage::SendPlayerInputs(Vec::new())), // Provide default or placeholder
-            _ => Err("Unknown value for NetworkMessage"),
+            6 => Ok(NetworkMessage::ServerSideAck(SeqNum(0))),
+            7 => Ok(NetworkMessage::ClientSideAck(SeqNum(0))),
+            8 => Ok(NetworkMessage::SendServerPlayerIDs(Vec::new())),
+            _ => Err("Invalid network message first byte"),
         }
     }
 }

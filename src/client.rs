@@ -175,8 +175,10 @@ async fn main() {
             }
             "j" => {
                 let other_worlds = connection
-                    .get_available_player_worlds()
-                    .expect("Didn't find any worlds to join!");
+                    .get_available_player_worlds();
+                loop {
+                    connection.update();
+                }
                 println!("{:?}", other_worlds);
                 println!("Which player do you want to connect to? Press 0-9 to get the player");
                 let other_player_id: ServerPlayerID;
@@ -185,13 +187,13 @@ async fn main() {
                     input.clear(); // Clear previous input
                     io::stdin().read_line(&mut input).expect("Failed to read line");
                     let choice = input.trim();
-                    match choice.parse::<usize>() {
-                        Ok(index) if index < other_worlds.len() => {
-                            other_player_id = other_worlds[index];
-                            break;
-                        }
-                        _ => println!("Invalid choice. Please press 0-9 to select a player."),
-                    }
+                    //match choice.parse::<usize>() {
+                    //    Ok(index) if index < other_worlds.len() => {
+                    //        other_player_id = other_worlds[index];
+                    //        break;
+                    //    }
+                    //    _ => println!("Invalid choice. Please press 0-9 to select a player."),
+                    //}
                 }
                 simulation = connection
                     .connect_to_other_world(other_player_id, &mut allocator)
