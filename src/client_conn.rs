@@ -66,7 +66,6 @@ impl ConnectionServer {
                 Ok(amt) if amt > 0 => {
                     if let Ok(request) = self.buffer.parse_on_client() {
                         match request {
-                            // maybe using the same parsing logic is bad security wise
                             NetworkMessage::SendWorldState(data) => {}
                             NetworkMessage::SendPlayerInputs(inputs) => {
                                 self.handle_recv_player_inputs(inputs);
@@ -100,6 +99,7 @@ impl ConnectionServer {
         todo!()
     }
     fn handle_ack(&mut self, type_of_ack: SeqNum) {
+        println!("Received ack from server");
         self.pending_acks.remove(&type_of_ack);
     }
     fn handle_retransmissions(&mut self) {
@@ -149,7 +149,10 @@ impl ConnectionServer {
     }
 
     pub fn send_player_inputs(&mut self, inputs: &[PlayerInput]) -> Result<(), std::io::Error> {
+        if inputs.len() == 0 {
+            return Ok(());
+        }
         let request = NetworkMessage::SendPlayerInputs(inputs.to_vec());
-        self.send_unreliable(&request)
+        self.send_reliable(&request)
     }
 }

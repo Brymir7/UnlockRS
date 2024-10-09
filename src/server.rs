@@ -1,16 +1,25 @@
 use std::net::{ SocketAddr, UdpSocket };
 use std::collections::HashMap;
+use std::time::{ Duration, Instant };
 use rand::seq;
-use types::{ MsgBuffer, ServerPlayerID, NetworkMessage, ServerSideMessage, SeqNum };
+use types::{
+    MsgBuffer,
+    NetworkMessage,
+    SeqNum,
+    SerializedNetworkMessage,
+    ServerPlayerID,
+    ServerSideMessage,
+};
 mod type_impl;
 mod types;
 mod memory;
-
+const MAX_RETRIES: u32 = 5;
+const RETRY_TIMEOUT: Duration = Duration::from_millis(100);
 struct Server {
     socket: UdpSocket,
     addr_to_player: HashMap<SocketAddr, ServerPlayerID>,
     msg_buffer: MsgBuffer,
-    last_processed_seq: HashMap<SocketAddr, SeqNum>,
+    pending_acks: HashMap<SocketAddr, HashMap<SeqNum, (Instant, SerializedNetworkMessage)>>,
     sequence_number: u8,
 }
 
@@ -23,37 +32,80 @@ impl Server {
             socket,
             addr_to_player,
             msg_buffer,
-            last_processed_seq: HashMap::new(),
+            pending_acks: HashMap::new(),
             sequence_number: 0,
         }
     }
 
     pub fn update(&mut self) {
         self.msg_buffer.clear();
-        let (amt, src) = self.socket.recv_from(&mut self.msg_buffer.0).unwrap();
-
-        if !self.addr_to_player.contains_key(&src) {
-            self.create_new_connection(&src);
+        match self.socket.recv_from(&mut self.msg_buffer.0) {
+            Ok((_, src)) => {
+                if !self.addr_to_player.contains_key(&src) {
+                    self.create_new_connection(&src);
+                }
+                let msg = self.msg_buffer.parse_on_server();
+                println!("Received msg {:?}", msg);
+                if let Ok(server_side_msg) = msg {
+                    self.handle_message(server_side_msg, &src);
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                println!("No data available");
+            }
+            Err(e) => {
+                eprintln!("Error receiving data: {}", e);
+            }
         }
-
-        let msg = self.msg_buffer.parse_on_server();
-        println!("Received msg {:?}", msg);
-
-        if let Ok(server_side_msg) = msg {
-            self.handle_message(server_side_msg, &src);
-        }
+        self.handle_retransmissions();
     }
+    pub fn handle_retransmissions(&mut self) {
+        let now = Instant::now();
+        let mut to_retry = Vec::new();
+        for (client_addr, pending_messages) in &mut self.pending_acks {
+            for (seq, (sent_time, message)) in pending_messages {
+                if now.duration_since(*sent_time) > RETRY_TIMEOUT {
+                    to_retry.push((*client_addr, *seq, message.clone()));
+                }
+            }
+        }
+        for (client_addr, seq, message) in to_retry {
+            if let Some(pending_messages) = self.pending_acks.get_mut(&client_addr) {
+                if let Some((ref mut sent_time, _)) = pending_messages.get_mut(&seq) {
+                    *sent_time = now;
+                    match self.socket.send_to(&message.bytes, client_addr) {
+                        Ok(_) => {
+                            println!("Resent message {:?} to client {:?}", seq, client_addr);
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "Failed to resend message {:?} to client {:?}: {}",
+                                seq,
+                                client_addr,
+                                e
+                            );
+                        }
+                    }
+                }
+            }
+        }
 
+        self.pending_acks.retain(|_, pending_messages| {
+            pending_messages.retain(|_, (sent_time, _)| {
+                now.duration_since(*sent_time) < RETRY_TIMEOUT * MAX_RETRIES
+            });
+            !pending_messages.is_empty()
+        });
+    }
     pub fn create_new_connection(&mut self, addr: &SocketAddr) {
         let new_id = ServerPlayerID(self.addr_to_player.len() as u8);
         self.addr_to_player.insert(*addr, new_id);
-        self.last_processed_seq.insert(*addr, SeqNum(0));
+        self.pending_acks.insert(*addr, HashMap::new());
     }
 
     pub fn handle_message(&mut self, msg: ServerSideMessage, src: &SocketAddr) {
         if let Some(seq_num) = msg.seq_num {
             self.process_message(msg.msg, src);
-            self.last_processed_seq.insert(*src, SeqNum(seq_num));
             self.send_ack(SeqNum(seq_num), src);
         } else {
             self.process_message(msg.msg, src);
@@ -63,15 +115,10 @@ impl Server {
     fn process_message(&mut self, msg: NetworkMessage, src: &SocketAddr) {
         match msg {
             NetworkMessage::SendWorldState(data) => {
-                // Handle world state update
                 println!("Processing world state update from {:?}", src);
-                // Add your world state update logic here
             }
             NetworkMessage::SendPlayerInputs(inputs) => {
-                // Handle player inputs
                 println!("Processing player inputs from {:?}: {:?}", src, inputs);
-
-                // Add your player input handling logic here
             }
             NetworkMessage::GetServerPlayerIDs => {
                 println!("Request for player IDS");
@@ -86,13 +133,30 @@ impl Server {
                     src
                 );
             }
+            NetworkMessage::ClientSideAck(seq_num) => {
+                self.handle_ack(seq_num, src);
+            }
             _ => {
                 println!("Got some other message on server");
             }
             // Add other message types as needed
         }
     }
-
+    pub fn handle_ack(&mut self, seq_num: SeqNum, src: &SocketAddr) {
+        if let Some(pending_messages) = self.pending_acks.get_mut(src) {
+            if pending_messages.remove(&seq_num).is_some() {
+                println!("Acknowledged message {:?} from client {:?}", seq_num, src);
+            } else {
+                println!(
+                    "Received acknowledgment for unknown message {:?} from client {:?}",
+                    seq_num,
+                    src
+                );
+            }
+        } else {
+            println!("Received acknowledgment from unknown client {:?}", src);
+        }
+    }
     fn send_ack(&mut self, seq_num: SeqNum, dst: &SocketAddr) {
         let serialized_msg = NetworkMessage::ServerSideAck(seq_num).serialize(
             types::NetworkMessageType::Unreliable

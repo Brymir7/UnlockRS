@@ -4,12 +4,12 @@ pub const MAX_UDP_PAYLOAD_LEN: usize = 508; // https://stackoverflow.com/questio
 pub const MAX_BULLETS: usize = 5;
 pub const MAX_ENEMIES: usize = 20;
 pub const AMT_RANDOM_BYTES: usize = 3;
-pub const RELIABLE_FLAG_BIT_POS: usize = AMT_RANDOM_BYTES ; // AMT random bytes starts with bit 0 so bit AMT_RANDOM_BYTES - 1 is last bit of it, and AMT_RANDOM_BYTES IS FREE
-pub const SEQ_NUM_BIT_POS: usize = RELIABLE_FLAG_BIT_POS + 1;
-pub const DATA_BIT_START_POS: usize = SEQ_NUM_BIT_POS + 1;
-pub const PLAYER_MOVE_LEFT_BIT_POS: usize = 1;
-pub const PLAYER_MOVE_RIGHT_BIT_POS: usize = 2;
-pub const PLAYER_SHOOT_BIT_POS: usize = 3;
+pub const RELIABLE_FLAG_BYTE_POS: usize = AMT_RANDOM_BYTES ; // AMT random bytes starts with bit 0 so bit AMT_RANDOM_BYTES - 1 is last bit of it, and AMT_RANDOM_BYTES IS FREE
+pub const SEQ_NUM_BYTE_POS: usize = RELIABLE_FLAG_BYTE_POS + 1;
+pub const DATA_BIT_START_POS: usize = SEQ_NUM_BYTE_POS + 1;
+pub const PLAYER_MOVE_LEFT_BYTE_POS: usize = 1;
+pub const PLAYER_MOVE_RIGHT_BYTE_POS: usize = 2;
+pub const PLAYER_SHOOT_BYTE_POS: usize = 3;
 
 #[derive(Copy, Clone)]
 pub struct Player {

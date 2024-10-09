@@ -209,6 +209,7 @@ async fn main() {
     let mut player1_inputs = Vec::new();
     loop {
         let dt = get_frame_time();
+        connection.update();
         player1_inputs.clear();
         if is_key_down(KeyCode::A) {
             player1_inputs.push(PlayerInput::Left);
@@ -221,7 +222,6 @@ async fn main() {
         }
         let mut player2_inputs = Vec::new();
         simulation.update(dt, &player1_inputs, &player2_inputs, &mut allocator);
-
         connection
             .send_player_inputs(&player1_inputs)
             .expect("Socket should be setup before sending!");
