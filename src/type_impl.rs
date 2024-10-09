@@ -16,6 +16,7 @@ use crate::types::{
     PLAYER_SHOOT_BYTE_POS,
     RELIABLE_FLAG_BYTE_POS,
     SEQ_NUM_BYTE_POS,
+    VECTOR_LEN_BYTE_POS,
 };
 
 impl MsgBuffer {
@@ -74,7 +75,9 @@ impl MsgBuffer {
                 Ok(NetworkMessage::SendPlayerInputs(player_inputs))
             }
             NetworkMessage::SendServerPlayerIDs(_) => {
-                let ids: Vec<u8> = data;
+                let len = bytes[VECTOR_LEN_BYTE_POS];
+                let ids: Vec<u8> =
+                    bytes[VECTOR_LEN_BYTE_POS + 1..VECTOR_LEN_BYTE_POS + 1 + (len as usize)].into();
                 Ok(NetworkMessage::SendServerPlayerIDs(ids))
             }
             NetworkMessage::ServerSideAck(_) => {
@@ -161,7 +164,10 @@ impl NetworkMessage {
             }
             Self::SendServerPlayerIDs(ref ids) => {
                 bytes.push(NetworkMessage::SendServerPlayerIDs(Vec::new()).into());
+                debug_assert!(ids.len() <= (u8::MAX as usize));
+                bytes.push(ids.len() as u8);
                 bytes.extend(ids);
+                debug_assert!(bytes[VECTOR_LEN_BYTE_POS] == (ids.len() as u8));
             }
             _ => {
                 bytes.push(self.into());
@@ -203,6 +209,7 @@ impl From<NetworkMessage> for u8 {
             NetworkMessage::ServerSideAck(_) => 6,
             NetworkMessage::ClientSideAck(_) => 7,
             NetworkMessage::SendServerPlayerIDs(_) => 8,
+            NetworkMessage::ConnectToOtherWorld(_, _) => 9,
         }
     }
 }
@@ -218,6 +225,7 @@ impl From<&NetworkMessage> for u8 {
             NetworkMessage::ServerSideAck(_) => 6,
             NetworkMessage::ClientSideAck(_) => 7,
             NetworkMessage::SendServerPlayerIDs(_) => 8,
+            NetworkMessage::ConnectToOtherWorld(_, _) => 9,
         }
     }
 }

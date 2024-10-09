@@ -1,16 +1,17 @@
 use macroquad::{ color::Color, math::Vec2 };
-use crate::memory::FixedDataPtr;
+use crate::memory::{ FixedDataPtr, PageAllocator };
 pub const MAX_UDP_PAYLOAD_LEN: usize = 508; // https://stackoverflow.com/questions/1098897/what-is-the-largest-safe-udp-packet-size-on-the-internet
 pub const MAX_BULLETS: usize = 5;
 pub const MAX_ENEMIES: usize = 20;
 pub const AMT_RANDOM_BYTES: usize = 3;
-pub const RELIABLE_FLAG_BYTE_POS: usize = AMT_RANDOM_BYTES ; // AMT random bytes starts with bit 0 so bit AMT_RANDOM_BYTES - 1 is last bit of it, and AMT_RANDOM_BYTES IS FREE
+pub const RELIABLE_FLAG_BYTE_POS: usize = AMT_RANDOM_BYTES; // AMT random bytes starts with bit 0 so bit AMT_RANDOM_BYTES - 1 is last bit of it, and AMT_RANDOM_BYTES IS FREE
 pub const SEQ_NUM_BYTE_POS: usize = RELIABLE_FLAG_BYTE_POS + 1;
 pub const DISCRIMINANT_BIT_START_POS: usize = SEQ_NUM_BYTE_POS + 1;
 pub const DATA_BIT_START_POS: usize = DISCRIMINANT_BIT_START_POS + 1;
 pub const PLAYER_MOVE_LEFT_BYTE_POS: usize = 1;
 pub const PLAYER_MOVE_RIGHT_BYTE_POS: usize = 2;
 pub const PLAYER_SHOOT_BYTE_POS: usize = 3;
+pub const VECTOR_LEN_BYTE_POS: usize = DATA_BIT_START_POS;
 
 #[derive(Copy, Clone)]
 pub struct Player {
@@ -76,6 +77,7 @@ pub enum NetworkMessage {
     ServerSideAck(SeqNum) = 6,
     ClientSideAck(SeqNum) = 7,
     SendServerPlayerIDs(Vec<u8>) = 8,
+    ConnectToOtherWorld(ServerPlayerID, PageAllocator) = 9,
 }
 #[derive(Eq, Hash, PartialEq, Debug, Clone, Copy)]
 pub struct SeqNum(pub u8);

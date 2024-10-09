@@ -10,7 +10,7 @@ mod simulation {
         let mut rng = rand::thread_rng();
         rng.gen_range(range)
     }
-    pub const PACKET_LOSS_PERCENTAGE: f32 = 1.0;
+    pub const PACKET_LOSS_PERCENTAGE: f32 = 25.0;
     pub const LATENCY_MS: Duration = Duration::from_millis(100);
 }
 
@@ -28,30 +28,92 @@ use crate::{
     },
 };
 
-const MAX_RETRIES: u32 = 5;
+const MAX_RETRIES: u32 = 20;
 const RETRY_TIMEOUT: Duration = Duration::from_millis(100);
-
+use tokio::sync::mpsc;
 pub struct ConnectionServer {
     socket: UdpSocket,
     sequence_number: u8,
     pending_acks: HashMap<SeqNum, (Instant, SerializedNetworkMessage)>,
     buffer: MsgBuffer,
+    response_sender: mpsc::UnboundedSender<NetworkMessage>,
+    request_receiver: mpsc::UnboundedReceiver<NetworkMessage>,
 }
 
 impl ConnectionServer {
-    pub fn new() -> Result<Self, std::io::Error> {
+    pub fn new() -> Result<
+        (
+            ConnectionServer,
+            mpsc::UnboundedSender<NetworkMessage>,
+            mpsc::UnboundedReceiver<NetworkMessage>,
+        ),
+        std::io::Error
+    > {
         let socket = UdpSocket::bind("127.0.0.1:0")?;
+        socket.set_nonblocking(true);
         socket.connect("127.0.0.1:8080")?;
-        socket.set_nonblocking(true)?;
+        let (response_sender, response_receiver) = mpsc::unbounded_channel();
+        let (request_sender, request_receiver) = mpsc::unbounded_channel();
 
-        Ok(ConnectionServer {
+        let connection_server = ConnectionServer {
             socket,
             sequence_number: 0,
             pending_acks: HashMap::new(),
             buffer: MsgBuffer::default(),
-        })
-    }
+            response_sender,
+            request_receiver,
+        };
 
+        Ok((connection_server, request_sender, response_receiver))
+    }
+    pub async fn run(mut self) {
+        loop {
+            tokio::select! {
+                Some(request) = self.request_receiver.recv() => {
+                    match request {
+                        NetworkMessage::GetOwnServerPlayerID => {
+                            todo!()
+                        }
+                        NetworkMessage::GetPlayerInputs => {
+                            todo!()
+                        }
+                        NetworkMessage::GetWorldState=> {
+                            todo!()
+                        }
+                        NetworkMessage::GetServerPlayerIDs => {
+                            if let Err(e) = self.get_available_player_worlds() {
+                                eprintln!("Error getting available player worlds: {}", e);
+                            }
+                        },
+                        NetworkMessage::SendWorldState(sim_mem) => {
+                            if let Err(e) = self.send_player_world_state(sim_mem) {
+                                eprintln!("Error sending player world state: {}", e);
+                            }
+                        },
+                        NetworkMessage::SendPlayerInputs(inputs) => {
+                            if let Err(e) = self.send_player_inputs(&inputs) {
+                                eprintln!("Error sending player inputs: {}", e);
+                            }
+                        },
+                        NetworkMessage::ConnectToOtherWorld(other_player_id, mut alloc) => {
+                            match self.connect_to_other_world(other_player_id, &mut alloc) {
+                                Ok(simulation) => {
+                                    // Handle the new simulation
+                                },
+                                Err(e) => eprintln!("Error connecting to other world: {}", e),
+                            }
+                        },
+                        _ => {
+                            panic!("Tried to run server side NetworkMessage on client {:?}", request);
+                        }
+                    }
+                },
+                _ = tokio::time::sleep(Duration::from_millis(16)) => {
+                    self.update();
+                }
+            }
+        }
+    }
     pub fn update(&mut self) {
         self.receive_messages();
         self.handle_retransmissions();
@@ -64,13 +126,6 @@ impl ConnectionServer {
             if rng_gen_range(0.0..100.0) < PACKET_LOSS_PERCENTAGE {
                 println!("Simulated packet loss for SeqNum {}", self.sequence_number);
                 return Ok(());
-            } else {
-                thread::sleep(LATENCY_MS);
-                println!(
-                    "Simulated latency of {:?}ms for SeqNum {}",
-                    LATENCY_MS,
-                    self.sequence_number
-                );
             }
         }
         self.socket.send(&serialized.bytes)?;
@@ -91,13 +146,6 @@ impl ConnectionServer {
                 self.sequence_number = self.sequence_number.wrapping_add(1);
                 println!("Simulated packet loss for SeqNum {}", self.sequence_number);
                 return Ok(());
-            } else {
-                thread::sleep(LATENCY_MS);
-                println!(
-                    "Simulated latency of {:?}ms for SeqNum {}",
-                    LATENCY_MS,
-                    self.sequence_number
-                );
             }
         }
         self.socket.send(&serialized.bytes)?;
@@ -121,7 +169,9 @@ impl ConnectionServer {
                                 self.handle_ack(type_of_ack);
                             }
                             NetworkMessage::SendServerPlayerIDs(ids) => {
-                                println!("received server player ids {:?}", ids);
+                                let _ = self.response_sender.send(
+                                    NetworkMessage::SendServerPlayerIDs(ids)
+                                );
                             }
                             _ => {}
                         }
@@ -176,20 +226,17 @@ impl ConnectionServer {
         });
     }
 
-    pub fn send_player_world_state(
-        &mut self,
-        sim_mem: &PageAllocator
-    ) -> Result<(), std::io::Error> {
-        let request = NetworkMessage::SendWorldState(sim_mem.get_copy_of_state());
+    fn send_player_world_state(&mut self, sim_mem: Vec<u8>) -> Result<(), std::io::Error> {
+        let request = NetworkMessage::SendWorldState(sim_mem.clone());
         self.send_reliable(&request)
     }
 
-    pub fn get_available_player_worlds(&mut self) {
+    fn get_available_player_worlds(&mut self) -> Result<(), std::io::Error> {
         let request = NetworkMessage::GetServerPlayerIDs;
-        self.send_reliable(&request);
+        self.send_reliable(&request)
     }
 
-    pub fn connect_to_other_world(
+    fn connect_to_other_world(
         &mut self,
         other_player_id: ServerPlayerID,
         alloc: &mut PageAllocator
@@ -197,7 +244,7 @@ impl ConnectionServer {
         todo!();
     }
 
-    pub fn send_player_inputs(&mut self, inputs: &[PlayerInput]) -> Result<(), std::io::Error> {
+    fn send_player_inputs(&mut self, inputs: &[PlayerInput]) -> Result<(), std::io::Error> {
         if inputs.len() == 0 {
             return Ok(());
         }

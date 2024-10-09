@@ -13,7 +13,7 @@ use types::{
 mod type_impl;
 mod types;
 mod memory;
-const MAX_RETRIES: u32 = 5;
+const MAX_RETRIES: u32 = 20;
 const RETRY_TIMEOUT: Duration = Duration::from_millis(100);
 struct Server {
     socket: UdpSocket,
@@ -43,7 +43,16 @@ impl Server {
             Ok((_, src)) => {
                 if !self.addr_to_player.contains_key(&src) {
                     self.create_new_connection(&src);
+                    println!("addr to player doesnt ocntain key creating connection");
+                    println!(
+                        "{:?}",
+                        self.addr_to_player
+                            .values()
+                            .map(|v| v.0) // Assuming `v.0` is a u8
+                            .collect::<Vec<u8>>()
+                    );
                 }
+
                 let msg = self.msg_buffer.parse_on_server();
                 println!("Received msg {:?}", msg);
                 if let Ok(server_side_msg) = msg {
@@ -123,16 +132,13 @@ impl Server {
             }
             NetworkMessage::GetServerPlayerIDs => {
                 println!("Request for player IDS");
-                self.send_reliable(
-                    NetworkMessage::SendServerPlayerIDs(
-                        self.addr_to_player
-                            .values()
-                            .into_iter()
-                            .map(|v| v.0)
-                            .collect()
-                    ),
-                    src
-                );
+                let player_ids: Vec<u8> = self.addr_to_player
+                    .values()
+                    .into_iter()
+                    .map(|v| v.0)
+                    .filter(|id| self.addr_to_player[src].0 != *id)
+                    .collect();
+                self.send_reliable(NetworkMessage::SendServerPlayerIDs(player_ids), src);
             }
             NetworkMessage::ClientSideAck(seq_num) => {
                 self.handle_ack(seq_num, src);

@@ -1,6 +1,7 @@
 use std::{ any::TypeId, marker::PhantomData };
 
 pub const PAGE_SIZE_BYTES: usize = 512;
+#[derive(Debug)]
 pub struct PageAllocator {
     memory: Vec<u8>, // Contiguous memory
     page_size: usize, // Size of each page
