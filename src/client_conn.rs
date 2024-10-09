@@ -108,7 +108,7 @@ impl ConnectionServer {
                         }
                     }
                 },
-                _ = tokio::time::sleep(Duration::from_millis(16)) => {
+                _ = tokio::time::sleep(Duration::from_millis(0)) => {
                     self.update();
                 }
             }
