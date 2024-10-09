@@ -1,4 +1,18 @@
-use std::{ collections::HashMap, net::UdpSocket, time::{ Duration, Instant } };
+use std::{ collections::HashMap, net::UdpSocket, thread, time::{ Duration, Instant } };
+
+#[cfg(feature = "simulation_mode")]
+use simulation::{ LATENCY_MS, PACKET_LOSS_PERCENTAGE, rng_gen_range };
+#[cfg(feature = "simulation_mode")]
+mod simulation {
+    use std::{ ops::Range, time::Duration };
+    use rand::Rng;
+    pub fn rng_gen_range(range: Range<f32>) -> f32 {
+        let mut rng = rand::thread_rng();
+        rng.gen_range(range)
+    }
+    pub const PACKET_LOSS_PERCENTAGE: f32 = 1.0;
+    pub const LATENCY_MS: Duration = Duration::from_millis(100);
+}
 
 use crate::{
     memory::PageAllocator,
@@ -45,6 +59,20 @@ impl ConnectionServer {
 
     pub fn send_unreliable(&self, request: &NetworkMessage) -> Result<(), std::io::Error> {
         let serialized = request.serialize(crate::types::NetworkMessageType::Unreliable);
+        #[cfg(feature = "simulation_mode")]
+        {
+            if rng_gen_range(0.0..100.0) < PACKET_LOSS_PERCENTAGE {
+                println!("Simulated packet loss for SeqNum {}", self.sequence_number);
+                return Ok(());
+            } else {
+                thread::sleep(LATENCY_MS);
+                println!(
+                    "Simulated latency of {:?}ms for SeqNum {}",
+                    LATENCY_MS,
+                    self.sequence_number
+                );
+            }
+        }
         self.socket.send(&serialized.bytes)?;
         Ok(())
     }
@@ -53,6 +81,25 @@ impl ConnectionServer {
         let serialized = request.serialize(
             crate::types::NetworkMessageType::Reliable(SeqNum(self.sequence_number))
         );
+        #[cfg(feature = "simulation_mode")]
+        {
+            if rng_gen_range(0.0..100.0) < PACKET_LOSS_PERCENTAGE {
+                self.pending_acks.insert(SeqNum(self.sequence_number), (
+                    Instant::now(),
+                    serialized,
+                ));
+                self.sequence_number = self.sequence_number.wrapping_add(1);
+                println!("Simulated packet loss for SeqNum {}", self.sequence_number);
+                return Ok(());
+            } else {
+                thread::sleep(LATENCY_MS);
+                println!(
+                    "Simulated latency of {:?}ms for SeqNum {}",
+                    LATENCY_MS,
+                    self.sequence_number
+                );
+            }
+        }
         self.socket.send(&serialized.bytes)?;
         self.pending_acks.insert(SeqNum(self.sequence_number), (Instant::now(), serialized));
         self.sequence_number = self.sequence_number.wrapping_add(1);
