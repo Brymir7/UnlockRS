@@ -105,6 +105,7 @@ impl Server {
 
     pub fn handle_message(&mut self, msg: ServerSideMessage, src: &SocketAddr) {
         if let Some(seq_num) = msg.seq_num {
+            println!("msg arrived with seq num {}", seq_num);
             self.process_message(msg.msg, src);
             self.send_ack(SeqNum(seq_num), src);
         } else {

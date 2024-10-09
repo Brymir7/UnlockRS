@@ -9,6 +9,7 @@ use crate::types::{
     ServerSideMessage,
     AMT_RANDOM_BYTES,
     DATA_BIT_START_POS,
+    DISCRIMINANT_BIT_START_POS,
     MAX_UDP_PAYLOAD_LEN,
     PLAYER_MOVE_LEFT_BYTE_POS,
     PLAYER_MOVE_RIGHT_BYTE_POS,
@@ -32,15 +33,13 @@ impl MsgBuffer {
         println!("{:?}", bytes[..6].to_vec());
         let reliable = bytes[RELIABLE_FLAG_BYTE_POS] > 0;
         let seq_num = if reliable { Some(SeqNum(bytes[SEQ_NUM_BYTE_POS])) } else { None };
-        let discriminator = bytes[DATA_BIT_START_POS];
+        let discriminator = bytes[DISCRIMINANT_BIT_START_POS];
         let message = NetworkMessage::try_from(discriminator)?;
+        let data = bytes[DATA_BIT_START_POS..].to_vec();
         let parsed_message = match message {
-            NetworkMessage::SendWorldState(_) => {
-                let data = bytes[DATA_BIT_START_POS + 1..].to_vec();
-                NetworkMessage::SendWorldState(data)
-            }
+            NetworkMessage::SendWorldState(_) => { NetworkMessage::SendWorldState(data) }
             NetworkMessage::SendPlayerInputs(_) => {
-                let player_inputs = Self::parse_player_inputs(&bytes[DATA_BIT_START_POS + 1..]);
+                let player_inputs = Self::parse_player_inputs(&data);
                 NetworkMessage::SendPlayerInputs(player_inputs)
             }
             _ => message,
@@ -62,20 +61,25 @@ impl MsgBuffer {
         if bytes.is_empty() {
             return Err("Empty buffer");
         }
-        let discriminator = bytes[DATA_BIT_START_POS];
+        let data = bytes[DATA_BIT_START_POS..].to_vec();
+        let discriminator = bytes[DISCRIMINANT_BIT_START_POS];
         let request = NetworkMessage::try_from(discriminator)?;
         match request {
             NetworkMessage::SendWorldState(_) => {
-                let data = bytes[1..].to_vec(); // Extract remaining bytes as Vec<u8>
+                let data = data; // Extract remaining bytes as Vec<u8>
                 Ok(NetworkMessage::SendWorldState(data))
             }
             NetworkMessage::SendPlayerInputs(_) => {
-                let player_inputs = Self::parse_player_inputs(&bytes[1..]);
+                let player_inputs = Self::parse_player_inputs(&data);
                 Ok(NetworkMessage::SendPlayerInputs(player_inputs))
             }
             NetworkMessage::SendServerPlayerIDs(_) => {
-                let ids: Vec<u8> = bytes[1..].to_vec();
+                let ids: Vec<u8> = data;
                 Ok(NetworkMessage::SendServerPlayerIDs(ids))
+            }
+            NetworkMessage::ServerSideAck(_) => {
+                let seq_num = data[0];
+                Ok(NetworkMessage::ServerSideAck(SeqNum(seq_num)))
             }
             _ => Ok(request),
         }

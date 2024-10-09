@@ -99,8 +99,9 @@ impl ConnectionServer {
         todo!()
     }
     fn handle_ack(&mut self, type_of_ack: SeqNum) {
-        println!("Received ack from server");
+        println!("Received ack from server {}", type_of_ack.0);
         self.pending_acks.remove(&type_of_ack);
+        println!("self.pendingacks {:?}", self.pending_acks.keys())
     }
     fn handle_retransmissions(&mut self) {
         let now = Instant::now();
@@ -115,6 +116,7 @@ impl ConnectionServer {
         for (seq, request) in to_retry {
             if let Some((ref mut sent_time, _)) = self.pending_acks.get_mut(&seq) {
                 *sent_time = now;
+                println!("sent retranmission");
                 if let Err(e) = self.socket.send(&request.bytes) {
                     eprintln!("Failed to resend message {:?}: {}", seq, e);
                 }
