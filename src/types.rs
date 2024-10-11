@@ -86,11 +86,12 @@ pub enum NetworkMessageType {
     Unreliable,
 }
 #[derive(Debug)]
-pub struct ServerSideMessage {
+pub struct DeserializedMessage {
     pub reliable: bool,
     pub seq_num: Option<u8>,
     pub msg: NetworkMessage,
 }
+
 #[derive(Clone)]
 pub struct SerializedNetworkMessage {
     pub bytes: Vec<u8>,
@@ -100,3 +101,11 @@ pub struct ChunkedSerializedNetworkMessage {
     pub bytes: [u8; MAX_UDP_PAYLOAD_LEN],
 }
 pub struct MsgBuffer(pub [u8; MAX_UDP_PAYLOAD_LEN]);
+
+
+pub enum GameState {
+    ChooseMode,
+    WaitingForPlayerList,
+    ChoosePlayer,
+    Playing,
+}

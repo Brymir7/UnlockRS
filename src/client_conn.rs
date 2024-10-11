@@ -20,6 +20,7 @@ use crate::{
         ChunkedSerializedNetworkMessage,
         MsgBuffer,
         NetworkMessage,
+        NetworkMessageType,
         PlayerInput,
         SeqNum,
         SerializedNetworkMessage,
@@ -153,14 +154,23 @@ impl ConnectionServer {
         self.sequence_number = self.sequence_number.wrapping_add(1);
         Ok(())
     }
-
+    fn send_ack(&self, seq_num: SeqNum) {
+        let ack_message = NetworkMessage::ClientSideAck(seq_num);
+        let serialized_msg = ack_message.serialize(NetworkMessageType::Unreliable);
+        if let Err(e) = self.socket.send(&serialized_msg.bytes) {
+            eprintln!("Failed to send ACK to server: {}", e);
+        }
+    }
     fn receive_messages(&mut self) {
         loop {
             self.buffer.clear();
             match self.socket.recv(&mut self.buffer.0) {
                 Ok(amt) if amt > 0 => {
                     if let Ok(request) = self.buffer.parse_on_client() {
-                        match request {
+                        if let Some(seq_num) = request.seq_num {
+                            self.send_ack(SeqNum(seq_num));
+                        }
+                        match request.msg {
                             NetworkMessage::SendWorldState(data) => {}
                             NetworkMessage::SendPlayerInputs(inputs) => {
                                 self.handle_recv_player_inputs(inputs);
@@ -251,4 +261,5 @@ impl ConnectionServer {
         let request = NetworkMessage::SendPlayerInputs(inputs.to_vec());
         self.send_reliable(&request)
     }
+
 }
