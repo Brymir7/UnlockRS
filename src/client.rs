@@ -5,6 +5,7 @@ use memory::{ PageAllocator, PAGE_SIZE_BYTES };
 use types::{
     Bullet,
     Enemy,
+    GameState,
     Player,
     PlayerID,
     PlayerInput,
@@ -162,74 +163,105 @@ impl Simulation {
 #[macroquad::main("2 Player Cube Shooter")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut allocator = PageAllocator::new(1024 * 1024 * 1, PAGE_SIZE_BYTES);
-    let mut simulation: Simulation;
+    let mut simulation: Option<Simulation> = None;
     let (connection_server, request_sender, mut response_receiver) = ConnectionServer::new()?;
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.spawn(async move {
         connection_server.run().await;
     });
-    println!("Do you want to host or join? (h/j)");
-    let mut input = String::new();
+
+    let mut game_state = GameState::ChooseMode;
+    let mut other_player_ids: Vec<u8> = Vec::new();
 
     loop {
-        io::stdin().read_line(&mut input).expect("Failed to read line");
-        let choice = input.trim();
-        match choice {
-            "h" => {
-                simulation = Simulation::new(&mut allocator);
-                break;
+        clear_background(BLACK);
+
+        match game_state {
+            GameState::ChooseMode => {
+                draw_text("Choose mode:", 20.0, 40.0, 30.0, WHITE);
+                draw_text("Press 'H' to Host", 20.0, 80.0, 20.0, WHITE);
+                draw_text("Press 'J' to Join", 20.0, 110.0, 20.0, WHITE);
+
+                if is_key_pressed(KeyCode::H) {
+                    simulation = Some(Simulation::new(&mut allocator));
+                    game_state = GameState::Playing;
+                } else if is_key_pressed(KeyCode::J) {
+                    request_sender.send(NetworkMessage::GetServerPlayerIDs)?;
+                    game_state = GameState::WaitingForPlayerList;
+                }
             }
-            "j" => {
-                request_sender.send(NetworkMessage::GetServerPlayerIDs)?;
+            GameState::WaitingForPlayerList => {
+                draw_text("Waiting for player list...", 20.0, 40.0, 30.0, WHITE);
                 if
                     let Some(NetworkMessage::SendServerPlayerIDs(ids)) =
                         response_receiver.recv().await
                 {
                     println!("Received server player ids: {:?}", ids);
+                    other_player_ids = ids;
+                    game_state = GameState::ChoosePlayer;
                 }
-                println!("Which player do you want to connect to? Press 0-9 to get the player");
-                let other_player_id: ServerPlayerID;
-                loop {
-                    input.clear(); // Clear previous input
-                    io::stdin().read_line(&mut input).expect("Failed to read line");
-                    let choice = input.trim();
-                    //match choice.parse::<usize>() {
-                    //    Ok(index) if index < other_worlds.len() => {
-                    //        other_player_id = other_worlds[index];
-                    //        break;
-                    //    }
-                    //    _ => println!("Invalid choice. Please press 0-9 to select a player."),
-                    //}
+            }
+            GameState::ChoosePlayer => {
+                draw_text("Choose a player to connect to:", 20.0, 40.0, 30.0, WHITE);
+                for (i, id) in other_player_ids.iter().enumerate() {
+                    draw_text(
+                        &format!("Press {} for Player {}", i, id),
+                        20.0,
+                        80.0 + 30.0 * (i as f32),
+                        20.0,
+                        WHITE
+                    );
                 }
-                break;
+                let keycodes = [
+                    KeyCode::Key0,
+                    KeyCode::Key1,
+                    KeyCode::Key2,
+                    KeyCode::Key3,
+                    KeyCode::Key4,
+                    KeyCode::Key5,
+                    KeyCode::Key6,
+                    KeyCode::Key7,
+                    KeyCode::Key8,
+                    KeyCode::Key9,
+                ];
+                let player_to_connect_to: ServerPlayerID;
+                for i in 0..9 {
+                    if
+                        is_key_pressed(keycodes[i as usize]) &&
+                        (i as usize) < other_player_ids.len()
+                    {
+                        player_to_connect_to = ServerPlayerID(other_player_ids[i as usize]);
+
+                        break;
+                    }
+                }
+
+                simulation = Some(Simulation::new(&mut allocator)); // You might want to modify this to create a client simulation
+                game_state = GameState::Playing;
             }
-            _ => {
-                println!("Invalid choice, try again!");
-                input.clear();
+            GameState::Playing => {
+                if let Some(ref mut sim) = simulation {
+                    let dt = get_frame_time();
+
+                    let mut player1_inputs = Vec::new();
+                    if is_key_down(KeyCode::A) {
+                        player1_inputs.push(PlayerInput::Left);
+                    }
+                    if is_key_down(KeyCode::D) {
+                        player1_inputs.push(PlayerInput::Right);
+                    }
+                    if is_key_pressed(KeyCode::W) {
+                        player1_inputs.push(PlayerInput::Shoot);
+                    }
+                    let player2_inputs = Vec::new();
+
+                    sim.update(dt, &player1_inputs, &player2_inputs, &mut allocator);
+                    request_sender.send(NetworkMessage::SendPlayerInputs(player1_inputs.clone()))?;
+                    sim.draw(&allocator);
+                }
             }
         }
-    }
-    let mut player1_inputs = Vec::new();
-    loop {
-        let dt = get_frame_time();
 
-        player1_inputs.clear();
-        if is_key_down(KeyCode::A) {
-            player1_inputs.push(PlayerInput::Left);
-        }
-        if is_key_down(KeyCode::D) {
-            player1_inputs.push(PlayerInput::Right);
-        }
-        if is_key_pressed(KeyCode::W) {
-            player1_inputs.push(PlayerInput::Shoot);
-        }
-        let mut player2_inputs = Vec::new();
-
-        simulation.update(dt, &player1_inputs, &player2_inputs, &mut allocator);
-
-        request_sender.send(NetworkMessage::SendPlayerInputs(player1_inputs.clone()))?;
-        clear_background(BLACK);
-        simulation.draw(&allocator);
         next_frame().await;
     }
 }

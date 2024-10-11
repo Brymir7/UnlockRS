@@ -6,7 +6,7 @@ use crate::types::{
     PlayerInput,
     SeqNum,
     SerializedNetworkMessage,
-    ServerSideMessage,
+    DeserializedMessage,
     AMT_RANDOM_BYTES,
     DATA_BIT_START_POS,
     DISCRIMINANT_BIT_START_POS,
@@ -26,7 +26,7 @@ impl MsgBuffer {
     pub fn clear(&mut self) {
         self.0 = [0; MAX_UDP_PAYLOAD_LEN];
     }
-    pub fn parse_on_server(&self) -> Result<ServerSideMessage, &'static str> {
+    pub fn parse_on_server(&self) -> Result<DeserializedMessage, &'static str> {
         let bytes = &self.0;
         if bytes.is_empty() {
             return Err("Empty buffer");
@@ -47,45 +47,56 @@ impl MsgBuffer {
         };
 
         let server_side_message = if reliable {
-            ServerSideMessage::from_reliable_msg(
+            DeserializedMessage::from_reliable_msg(
                 parsed_message,
                 seq_num.map(|s| s.0)
             )
         } else {
-            ServerSideMessage::from_unreliable_msg(parsed_message)
+            DeserializedMessage::from_unreliable_msg(parsed_message)
         };
         Ok(server_side_message)
     }
-    pub fn parse_on_client(&self) -> Result<NetworkMessage, &'static str> {
+    pub fn parse_on_client(&self) -> Result<DeserializedMessage, &'static str> {
         let bytes = &self.0;
 
         if bytes.is_empty() {
             return Err("Empty buffer");
         }
+        let reliable = bytes[RELIABLE_FLAG_BYTE_POS] > 0;
+        let seq_num = if reliable { Some(SeqNum(bytes[SEQ_NUM_BYTE_POS])) } else { None };
         let data = bytes[DATA_BIT_START_POS..].to_vec();
         let discriminator = bytes[DISCRIMINANT_BIT_START_POS];
         let request = NetworkMessage::try_from(discriminator)?;
-        match request {
+        let parsed_message = match request {
             NetworkMessage::SendWorldState(_) => {
                 let data = data; // Extract remaining bytes as Vec<u8>
-                Ok(NetworkMessage::SendWorldState(data))
+                NetworkMessage::SendWorldState(data)
             }
             NetworkMessage::SendPlayerInputs(_) => {
                 let player_inputs = Self::parse_player_inputs(&data);
-                Ok(NetworkMessage::SendPlayerInputs(player_inputs))
+                NetworkMessage::SendPlayerInputs(player_inputs)
             }
             NetworkMessage::SendServerPlayerIDs(_) => {
                 let len = bytes[VECTOR_LEN_BYTE_POS];
                 let ids: Vec<u8> =
                     bytes[VECTOR_LEN_BYTE_POS + 1..VECTOR_LEN_BYTE_POS + 1 + (len as usize)].into();
-                Ok(NetworkMessage::SendServerPlayerIDs(ids))
+                NetworkMessage::SendServerPlayerIDs(ids)
             }
             NetworkMessage::ServerSideAck(_) => {
                 let seq_num = data[0];
-                Ok(NetworkMessage::ServerSideAck(SeqNum(seq_num)))
+                NetworkMessage::ServerSideAck(SeqNum(seq_num))
             }
-            _ => Ok(request),
-        }
+            _ => request,
+        };
+        let client_side_message = if reliable {
+            DeserializedMessage::from_reliable_msg(
+                parsed_message,
+                seq_num.map(|s| s.0)
+            )
+        } else {
+            DeserializedMessage::from_unreliable_msg(parsed_message)
+        };
+        Ok(client_side_message)
     }
     fn parse_player_inputs(bytes: &[u8]) -> Vec<PlayerInput> {
         let mut res = Vec::new();
@@ -106,16 +117,16 @@ impl MsgBuffer {
         return res;
     }
 }
-impl ServerSideMessage {
+impl DeserializedMessage {
     fn from_reliable_msg(msg: NetworkMessage, seq_num: Option<u8>) -> Self {
-        ServerSideMessage {
+        DeserializedMessage {
             reliable: true,
             seq_num,
             msg: msg,
         }
     }
     fn from_unreliable_msg(msg: NetworkMessage) -> Self {
-        ServerSideMessage {
+        DeserializedMessage {
             reliable: false,
             seq_num: None,
             msg: msg,

@@ -8,7 +8,7 @@ use types::{
     SeqNum,
     SerializedNetworkMessage,
     ServerPlayerID,
-    ServerSideMessage,
+    DeserializedMessage,
 };
 mod type_impl;
 mod types;
@@ -112,7 +112,7 @@ impl Server {
         self.pending_acks.insert(*addr, HashMap::new());
     }
 
-    pub fn handle_message(&mut self, msg: ServerSideMessage, src: &SocketAddr) {
+    pub fn handle_message(&mut self, msg: DeserializedMessage, src: &SocketAddr) {
         if let Some(seq_num) = msg.seq_num {
             println!("msg arrived with seq num {}", seq_num);
             self.process_message(msg.msg, src);
@@ -173,9 +173,12 @@ impl Server {
         }
     }
     pub fn send_reliable(&mut self, msg: NetworkMessage, dst: &SocketAddr) {
-        let serialized_msg = msg.serialize(
-            types::NetworkMessageType::Reliable(SeqNum(self.sequence_number))
-        );
+        let seq_num = SeqNum(self.sequence_number);
+        let serialized_msg = msg.serialize(types::NetworkMessageType::Reliable(seq_num));
+        self.pending_acks
+            .entry(*dst)
+            .or_insert_with(HashMap::new)
+            .insert(seq_num, (Instant::now(), serialized_msg.clone()));
         self.sequence_number = self.sequence_number.wrapping_add(1);
         if let Err(e) = self.socket.send_to(&serialized_msg.bytes, dst) {
             eprintln!("Failed to send reliable message to {:?}: {}", dst, e);
