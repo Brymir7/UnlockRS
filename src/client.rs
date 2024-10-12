@@ -193,7 +193,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             GameState::WaitingForPlayerList => {
                 draw_text("Waiting for player list...", 20.0, 40.0, 30.0, WHITE);
                 if
-                    let Some(NetworkMessage::SendServerPlayerIDs(ids)) =
+                    let Some(NetworkMessage::ServerSentPlayerIDs(ids)) =
                         response_receiver.recv().await
                 {
                     println!("Received server player ids: {:?}", ids);
@@ -256,7 +256,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let player2_inputs = Vec::new();
 
                     sim.update(dt, &player1_inputs, &player2_inputs, &mut allocator);
-                    request_sender.send(NetworkMessage::SendPlayerInputs(player1_inputs.clone()))?;
+                    request_sender.send(NetworkMessage::ClientSentPlayerInputs(player1_inputs.clone()))?;
                     sim.draw(&allocator);
                 }
             }

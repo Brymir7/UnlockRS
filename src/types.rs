@@ -1,12 +1,16 @@
 use macroquad::{ color::Color, math::Vec2 };
 use crate::memory::{ FixedDataPtr, PageAllocator };
 pub const MAX_UDP_PAYLOAD_LEN: usize = 508; // https://stackoverflow.com/questions/1098897/what-is-the-largest-safe-udp-packet-size-on-the-internet
+pub const PAYLOAD_DATA_LENGTH: usize = MAX_UDP_PAYLOAD_LEN - DATA_BIT_START_POS;
 pub const MAX_BULLETS: usize = 5;
 pub const MAX_ENEMIES: usize = 20;
-pub const AMT_RANDOM_BYTES: usize = 3;
+pub const AMT_RANDOM_BYTES: usize = 1;
 pub const RELIABLE_FLAG_BYTE_POS: usize = AMT_RANDOM_BYTES; // AMT random bytes starts with bit 0 so bit AMT_RANDOM_BYTES - 1 is last bit of it, and AMT_RANDOM_BYTES IS FREE
 pub const SEQ_NUM_BYTE_POS: usize = RELIABLE_FLAG_BYTE_POS + 1;
-pub const DISCRIMINANT_BIT_START_POS: usize = SEQ_NUM_BYTE_POS + 1;
+
+pub const BASE_CHUNK_SEQ_NUM_BYTE_POS: usize = SEQ_NUM_BYTE_POS + 1;
+pub const AMT_OF_CHUNKS_BYTE_POS: usize = BASE_CHUNK_SEQ_NUM_BYTE_POS + 1;
+pub const DISCRIMINANT_BIT_START_POS: usize = AMT_OF_CHUNKS_BYTE_POS + 1;
 pub const DATA_BIT_START_POS: usize = DISCRIMINANT_BIT_START_POS + 1;
 pub const PLAYER_MOVE_LEFT_BYTE_POS: usize = 1;
 pub const PLAYER_MOVE_RIGHT_BYTE_POS: usize = 2;
@@ -66,18 +70,22 @@ pub enum PlayerID {
 pub struct ServerPlayerID(pub u8);
 
 #[repr(u8)]
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum NetworkMessage {
     GetServerPlayerIDs = 0,
     GetOwnServerPlayerID = 1,
-    GetWorldState = 2,
-    SendWorldState(Vec<u8>) = 3,
-    GetPlayerInputs = 4,
-    SendPlayerInputs(Vec<PlayerInput>) = 5,
-    ServerSideAck(SeqNum) = 6,
-    ClientSideAck(SeqNum) = 7,
-    SendServerPlayerIDs(Vec<u8>) = 8,
-    ConnectToOtherWorld(ServerPlayerID, PageAllocator) = 9,
+
+    ClientSentWorld(Vec<u8>) = 2,
+    ClientSentPlayerInputs(Vec<PlayerInput>) = 3,
+
+    ServerSideAck(SeqNum) = 4,
+    ClientSideAck(SeqNum) = 5,
+
+    ServerSentPlayerIDs(Vec<u8>) = 6,
+    ServerSentPlayerInputs(Vec<PlayerInput>) = 7,
+    ServerSentWorld(Vec<u8>) = 8,
+
+    ConnectToOtherWorld = 9,
 }
 #[derive(Eq, Hash, PartialEq, Debug, Clone, Copy)]
 pub struct SeqNum(pub u8);
@@ -91,17 +99,31 @@ pub struct DeserializedMessage {
     pub seq_num: Option<u8>,
     pub msg: NetworkMessage,
 }
+pub struct ChunkOfMessage {
+    pub seq_num: u8,
+    pub base_seq_num: u8,
+    pub amt_of_chunks: u8,
+    pub data_bytes: Vec<u8>,
+}
+pub enum DeserializedMessageType {
+    NonChunked(DeserializedMessage),
+    ChunkOfMessage(ChunkOfMessage),
+}
 
 #[derive(Clone)]
 pub struct SerializedNetworkMessage {
     pub bytes: Vec<u8>,
 }
+#[derive(Clone)]
 pub struct ChunkedSerializedNetworkMessage {
-    pub chunk_num: u16,
-    pub bytes: [u8; MAX_UDP_PAYLOAD_LEN],
+    pub bytes: Vec<Vec<u8>>,
+}
+
+pub enum SerializedMessageType {
+    NonChunked(SerializedNetworkMessage),
+    Chunked(ChunkedSerializedNetworkMessage),
 }
 pub struct MsgBuffer(pub [u8; MAX_UDP_PAYLOAD_LEN]);
-
 
 pub enum GameState {
     ChooseMode,
@@ -109,3 +131,17 @@ pub enum GameState {
     ChoosePlayer,
     Playing,
 }
+
+pub struct ChunkedMessageCollector {
+    pub msgs: [Vec<ChunkOfMessage>; u8::MAX as usize],
+}
+pub struct MessageHeader {
+    pub reliable: bool,
+    pub seq_num: Option<SeqNum>,
+    pub amt_of_chunks: u8,
+    pub base_chunk_seq_num: u8,
+    pub is_chunked: bool,
+    pub message: NetworkMessage,
+}
+
+pub struct PacketParser;

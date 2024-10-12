@@ -1,14 +1,18 @@
+use std::hash::Hash;
 use std::net::{ SocketAddr, UdpSocket };
 use std::collections::HashMap;
 use std::time::{ Duration, Instant };
 use rand::seq;
 use types::{
+    ChunkOfMessage,
+    DeserializedMessage,
+    DeserializedMessageType,
     MsgBuffer,
     NetworkMessage,
     SeqNum,
+    SerializedMessageType,
     SerializedNetworkMessage,
     ServerPlayerID,
-    DeserializedMessage,
 };
 mod type_impl;
 mod types;
@@ -18,6 +22,7 @@ const RETRY_TIMEOUT: Duration = Duration::from_millis(100);
 struct Server {
     socket: UdpSocket,
     addr_to_player: HashMap<SocketAddr, ServerPlayerID>,
+    pending_chunked_msgs: HashMap<SocketAddr, Vec<ChunkOfMessage>>,
     msg_buffer: MsgBuffer,
     pending_acks: HashMap<SocketAddr, HashMap<SeqNum, (Instant, SerializedNetworkMessage)>>,
     sequence_number: u8,
@@ -31,6 +36,7 @@ impl Server {
         Server {
             socket,
             addr_to_player,
+            pending_chunked_msgs: HashMap::new(),
             msg_buffer,
             pending_acks: HashMap::new(),
             sequence_number: 0,
@@ -54,9 +60,14 @@ impl Server {
                 }
 
                 let msg = self.msg_buffer.parse_on_server();
-                println!("Received msg {:?}", msg);
+
                 if let Ok(server_side_msg) = msg {
-                    self.handle_message(server_side_msg, &src);
+                    match server_side_msg {
+                        DeserializedMessageType::NonChunked(server_side_msg) => {
+                            self.handle_message(server_side_msg, &src);
+                        }
+                        DeserializedMessageType::ChunkOfMessage(chunk) => {}
+                    }
                 }
             }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
@@ -124,10 +135,10 @@ impl Server {
 
     fn process_message(&mut self, msg: NetworkMessage, src: &SocketAddr) {
         match msg {
-            NetworkMessage::SendWorldState(data) => {
+            NetworkMessage::ClientSentWorld(data) => {
                 println!("Processing world state update from {:?}", src);
             }
-            NetworkMessage::SendPlayerInputs(inputs) => {
+            NetworkMessage::ClientSentPlayerInputs(inputs) => {
                 println!("Processing player inputs from {:?}: {:?}", src, inputs);
             }
             NetworkMessage::GetServerPlayerIDs => {
@@ -138,7 +149,7 @@ impl Server {
                     .map(|v| v.0)
                     .filter(|id| self.addr_to_player[src].0 != *id)
                     .collect();
-                self.send_reliable(NetworkMessage::SendServerPlayerIDs(player_ids), src);
+                self.send_reliable(NetworkMessage::ServerSentPlayerIDs(player_ids), src);
             }
             NetworkMessage::ClientSideAck(seq_num) => {
                 self.handle_ack(seq_num, src);
@@ -168,27 +179,44 @@ impl Server {
         let serialized_msg = NetworkMessage::ServerSideAck(seq_num).serialize(
             types::NetworkMessageType::Unreliable
         );
-        if let Err(e) = self.socket.send_to(&serialized_msg.bytes, dst) {
-            eprintln!("Failed to send ACK to {:?}: {}", dst, e);
+        match serialized_msg {
+            SerializedMessageType::Chunked(_) => {
+                panic!("Ack msg shouldnt need to be chunked");
+            }
+            SerializedMessageType::NonChunked(serialized_msg) => {
+                if let Err(e) = self.socket.send_to(&serialized_msg.bytes, dst) {
+                    eprintln!("Failed to send ACK to {:?}: {}", dst, e);
+                }
+            }
         }
     }
     pub fn send_reliable(&mut self, msg: NetworkMessage, dst: &SocketAddr) {
         let seq_num = SeqNum(self.sequence_number);
         let serialized_msg = msg.serialize(types::NetworkMessageType::Reliable(seq_num));
-        self.pending_acks
-            .entry(*dst)
-            .or_insert_with(HashMap::new)
-            .insert(seq_num, (Instant::now(), serialized_msg.clone()));
-        self.sequence_number = self.sequence_number.wrapping_add(1);
-        if let Err(e) = self.socket.send_to(&serialized_msg.bytes, dst) {
-            eprintln!("Failed to send reliable message to {:?}: {}", dst, e);
+        match serialized_msg {
+            SerializedMessageType::Chunked(chunks) => {}
+            SerializedMessageType::NonChunked(serialized_msg) => {
+                self.pending_acks
+                    .entry(*dst)
+                    .or_insert_with(HashMap::new)
+                    .insert(seq_num, (Instant::now(), serialized_msg.clone()));
+                self.sequence_number = self.sequence_number.wrapping_add(1);
+                if let Err(e) = self.socket.send_to(&serialized_msg.bytes, dst) {
+                    eprintln!("Failed to send reliable message to {:?}: {}", dst, e);
+                }
+            }
         }
     }
 
     pub fn send_unreliable(&self, msg: NetworkMessage, dst: &SocketAddr) {
         let serialized_msg = msg.serialize(types::NetworkMessageType::Unreliable);
-        if let Err(e) = self.socket.send_to(&serialized_msg.bytes, dst) {
-            eprintln!("Failed to send unreliable message to {:?}: {}", dst, e);
+        match serialized_msg {
+            SerializedMessageType::Chunked(chunks) => {}
+            SerializedMessageType::NonChunked(serialized_msg) => {
+                if let Err(e) = self.socket.send_to(&serialized_msg.bytes, dst) {
+                    eprintln!("Failed to send unreliable message to {:?}: {}", dst, e);
+                }
+            }
         }
     }
 }
