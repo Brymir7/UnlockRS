@@ -1,4 +1,3 @@
-use std::{ io, net::UdpSocket, time::Duration };
 use client_conn::ConnectionServer;
 use macroquad::prelude::*;
 use memory::{ PageAllocator, PAGE_SIZE_BYTES };
@@ -11,11 +10,11 @@ use types::{
     PlayerInput,
     ServerPlayerID,
     Simulation,
-    SimulationDataMut,
     MAX_BULLETS,
     MAX_ENEMIES,
 };
 use crate::types::NetworkMessage;
+const PHYSICS_FRAME_TIME: f32 = 1.0 / 60.0;
 mod types;
 mod type_impl;
 mod client_conn;
@@ -24,7 +23,7 @@ impl Player {
     fn new(x: f32, color: Color) -> Self {
         Self {
             position: vec2(x, screen_height() - 50.0),
-            speed: 300.0,
+            speed: 150.0,
             color,
             bullets: [
                 Bullet {
@@ -40,6 +39,7 @@ impl Player {
 
     fn update(&mut self, dt: f32) {
         self.position.x += self.movement_input * self.speed * dt;
+        self.position.x = self.position.x.clamp(20.0, screen_width() - 20.0);
         if self.shoot_input {
             // self.bullets.push(Bullet {
             //     position: self.position,
@@ -106,7 +106,10 @@ impl Simulation {
     ) {
         self.handle_player_input(PlayerID::Player1, &player1_inputs, alloc);
         self.handle_player_input(PlayerID::Player2, &player2_inputs, alloc);
+
         let player1 = alloc.mut_read_fixed(&self.player1);
+        // println!("player mov inp: {}", player1.movement_input);
+
         player1.update(dt);
         let player2 = alloc.mut_read_fixed(&self.player2);
         player2.update(dt);
@@ -141,9 +144,7 @@ impl Simulation {
                 player_to_change = alloc.mut_read_fixed(&self.player2);
             }
         }
-        player_to_change.movement_input = 0.0;
         player_to_change.shoot_input = false;
-
         for input in inputs {
             match input {
                 PlayerInput::Left => {
@@ -172,7 +173,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut game_state = GameState::ChooseMode;
     let mut other_player_ids: Vec<u8> = Vec::new();
-
+    let mut timer = 0.0;
     loop {
         clear_background(BLACK);
 
@@ -196,7 +197,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let Some(NetworkMessage::ServerSentPlayerIDs(ids)) =
                         response_receiver.recv().await
                 {
-                    println!("Received server player ids: {:?}", ids);
+                    //println!("Received server player ids: {:?}", ids);
                     other_player_ids = ids;
                     game_state = GameState::ChoosePlayer;
                 }
@@ -242,7 +243,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             GameState::Playing => {
                 if let Some(ref mut sim) = simulation {
                     let dt = get_frame_time();
-
+                    timer += dt;
                     let mut player1_inputs = Vec::new();
                     if is_key_down(KeyCode::A) {
                         player1_inputs.push(PlayerInput::Left);
@@ -255,8 +256,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     let player2_inputs = Vec::new();
 
-                    sim.update(dt, &player1_inputs, &player2_inputs, &mut allocator);
-                    request_sender.send(NetworkMessage::ClientSentPlayerInputs(player1_inputs.clone()))?;
+                    if timer > PHYSICS_FRAME_TIME {
+                        timer = 0.0;
+                        sim.update(dt, &player1_inputs, &player2_inputs, &mut allocator);
+                        request_sender.send(
+                            NetworkMessage::ClientSentPlayerInputs(player1_inputs.clone())
+                        )?;
+                    }
+
                     sim.draw(&allocator);
                 }
             }

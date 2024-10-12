@@ -6,6 +6,7 @@ use crate::types::{
     DeserializedMessageType,
     MessageHeader,
     MsgBuffer,
+    NetworkLogger,
     NetworkMessage,
     NetworkMessageType,
     PacketParser,
@@ -30,7 +31,6 @@ use crate::types::{
 };
 impl PacketParser {
     pub fn parse_header(bytes: &[u8]) -> Result<MessageHeader, &'static str> {
-        println!("{:?}", bytes[..6].to_vec());
         let reliable = bytes[RELIABLE_FLAG_BYTE_POS] > 0;
         let seq_num = if reliable { Some(SeqNum(bytes[SEQ_NUM_BYTE_POS])) } else { None };
         let amt_of_chunks = bytes[AMT_OF_CHUNKS_BYTE_POS];
@@ -470,5 +470,28 @@ impl ChunkedMessageCollector {
             }
         }
         return None;
+    }
+}
+
+impl NetworkLogger {
+    pub fn log_simulated_packet_loss(&self, sequence_number: u8) {
+        if self.log {
+            println!("Simulated packet loss for SeqNum {}", sequence_number);
+        }
+    }
+    pub fn log_received_ack(&self, ack_num: u8) {
+        if self.log {
+            println!("Received ack from server: {}", ack_num);
+        }
+    }
+    pub fn log_pending_acks(&self, pending: Vec<SeqNum>) {
+        if self.log {
+            println!("Currently pending acks: {:?}", pending)
+        }
+    }
+    pub fn log_sent_retransmission(&self, seq_num: u8) {
+        if self.log {
+            println!("Sent retransmission for SeqNum: {}", seq_num);
+        }
     }
 }

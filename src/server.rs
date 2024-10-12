@@ -66,7 +66,9 @@ impl Server {
                         DeserializedMessageType::NonChunked(server_side_msg) => {
                             self.handle_message(server_side_msg, &src);
                         }
-                        DeserializedMessageType::ChunkOfMessage(chunk) => {}
+                        DeserializedMessageType::ChunkOfMessage(chunk) => {
+                            
+                        }
                     }
                 }
             }
