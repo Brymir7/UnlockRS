@@ -10,10 +10,10 @@ mod simulation {
         let mut rng = rand::thread_rng();
         rng.gen_range(range)
     }
-    pub const PACKET_LOSS_PERCENTAGE: f32 = 25.0;
+    pub const PACKET_LOSS_PERCENTAGE: f32 = 75.0;
     pub const LATENCY_MS: Duration = Duration::from_millis(100);
 }
-const LOGGER: NetworkLogger = NetworkLogger { log: false };
+const LOGGER: NetworkLogger = NetworkLogger { log: true };
 use crate::{
     memory::PageAllocator,
     types::{
@@ -31,8 +31,8 @@ use crate::{
     },
 };
 
-const MAX_RETRIES: u32 = 20;
-const RETRY_TIMEOUT: Duration = Duration::from_millis(100);
+const MAX_RETRIES: u32 = 8;
+const RETRY_TIMEOUT: Duration = Duration::from_millis(250);
 use tokio::sync::mpsc;
 pub struct ConnectionServer {
     socket: UdpSocket,
@@ -100,7 +100,7 @@ impl ConnectionServer {
                         }
                     }
                 },
-                _ = tokio::time::sleep(Duration::from_millis(0)) => {
+                _ = tokio::time::sleep(Duration::from_millis(20)) => {
                     self.update();
                 }
             }
@@ -147,7 +147,7 @@ impl ConnectionServer {
                             ));
                             self.sequence_number = self.sequence_number.wrapping_add(1);
                             LOGGER.log_simulated_packet_loss(self.sequence_number);
-                            return Ok(());
+                            continue;
                         }
                     }
                     debug_assert!(msg[SEQ_NUM_BYTE_POS] == self.sequence_number);
