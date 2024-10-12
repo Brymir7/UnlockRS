@@ -270,10 +270,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         request_sender.send(
                             NetworkMessage::ClientSentWorld(allocator.get_copy_of_state())
                         )?;
-                        println!(
-                            "state first 10 bytes {:?}",
-                            allocator.get_copy_of_state()[0..100].to_vec()
-                        );
+                        // println!(
+                        //     "state first 10 bytes {:?}",
+                        //     allocator.get_copy_of_state()[0..100].to_vec()
+                        // );
+                        println!("STATE UPDATE SENT");
                         timer_player_state_update = 0.0;
                     }
 

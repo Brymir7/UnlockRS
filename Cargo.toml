@@ -20,4 +20,4 @@ path = "src/client.rs"
 
 [features]
 simulation_mode = []
-default = []
+default = ["simulation_mode"]
