@@ -99,26 +99,28 @@ pub struct DeserializedMessage {
     pub seq_num: Option<u8>,
     pub msg: NetworkMessage,
 }
+#[derive(Debug)]
 pub struct ChunkOfMessage {
     pub seq_num: u8,
     pub base_seq_num: u8,
     pub amt_of_chunks: u8,
-    pub data_bytes: Vec<u8>,
+    pub data_bytes: [u8; MAX_UDP_PAYLOAD_LEN],
 }
+
 pub enum DeserializedMessageType {
     NonChunked(DeserializedMessage),
     ChunkOfMessage(ChunkOfMessage),
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct SerializedNetworkMessage {
     pub bytes: Vec<u8>,
 }
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct ChunkedSerializedNetworkMessage {
     pub bytes: Vec<Vec<u8>>,
 }
-
+#[derive(Debug)]
 pub enum SerializedMessageType {
     NonChunked(SerializedNetworkMessage),
     Chunked(ChunkedSerializedNetworkMessage),
@@ -133,7 +135,7 @@ pub enum GameState {
 }
 
 pub struct ChunkedMessageCollector {
-    pub msgs: [Vec<ChunkOfMessage>; u8::MAX as usize],
+    pub msgs: [Vec<ChunkOfMessage>; (u8::MAX as usize) + 1],
 }
 pub struct MessageHeader {
     pub reliable: bool,

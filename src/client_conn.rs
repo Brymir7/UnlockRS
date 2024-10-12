@@ -135,7 +135,6 @@ impl ConnectionServer {
         let serialized_message = request.serialize(
             crate::types::NetworkMessageType::Reliable(SeqNum(self.sequence_number))
         );
-
         match serialized_message {
             crate::types::SerializedMessageType::Chunked(chunks) => {
                 for msg in chunks.bytes {
@@ -157,6 +156,7 @@ impl ConnectionServer {
                         Instant::now(),
                         SerializedNetworkMessage { bytes: msg },
                     ));
+                    LOGGER.log_sent_packet(self.sequence_number);
                     self.sequence_number = self.sequence_number.wrapping_add(1);
                 }
                 return Ok(());

@@ -5,6 +5,7 @@ use std::time::{ Duration, Instant };
 use rand::seq;
 use types::{
     ChunkOfMessage,
+    ChunkedMessageCollector,
     DeserializedMessage,
     DeserializedMessageType,
     MsgBuffer,
@@ -22,7 +23,7 @@ const RETRY_TIMEOUT: Duration = Duration::from_millis(100);
 struct Server {
     socket: UdpSocket,
     addr_to_player: HashMap<SocketAddr, ServerPlayerID>,
-    pending_chunked_msgs: HashMap<SocketAddr, Vec<ChunkOfMessage>>,
+    pending_chunked_msgs: HashMap<SocketAddr, ChunkedMessageCollector>,
     msg_buffer: MsgBuffer,
     pending_acks: HashMap<SocketAddr, HashMap<SeqNum, (Instant, SerializedNetworkMessage)>>,
     sequence_number: u8,
@@ -67,7 +68,17 @@ impl Server {
                             self.handle_message(server_side_msg, &src);
                         }
                         DeserializedMessageType::ChunkOfMessage(chunk) => {
-                            
+                            self.send_ack(SeqNum(chunk.seq_num), &src);
+                            if let Some(collector) = self.pending_chunked_msgs.get_mut(&src) {
+                                collector.collect(chunk);
+
+                                println!("collector collected");
+                                if let Some(msg) = collector.try_combine() {
+                                    self.handle_message(msg, &src);
+                                }
+                            } else {
+                                eprintln!("Couldnt find collector for addr {}", src);
+                            }
                         }
                     }
                 }
@@ -123,6 +134,7 @@ impl Server {
         let new_id = ServerPlayerID(self.addr_to_player.len() as u8);
         self.addr_to_player.insert(*addr, new_id);
         self.pending_acks.insert(*addr, HashMap::new());
+        self.pending_chunked_msgs.insert(*addr, ChunkedMessageCollector::default());
     }
 
     pub fn handle_message(&mut self, msg: DeserializedMessage, src: &SocketAddr) {
@@ -139,6 +151,7 @@ impl Server {
         match msg {
             NetworkMessage::ClientSentWorld(data) => {
                 println!("Processing world state update from {:?}", src);
+                println!("first 10 bytes of data {:?}", data[0..10].to_vec());
             }
             NetworkMessage::ClientSentPlayerInputs(inputs) => {
                 println!("Processing player inputs from {:?}: {:?}", src, inputs);
