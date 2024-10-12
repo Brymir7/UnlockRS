@@ -15,6 +15,7 @@ use crate::types::{
     SeqNum,
     SerializedMessageType,
     SerializedNetworkMessage,
+    ServerPlayerID,
     AMT_OF_CHUNKS_BYTE_POS,
     AMT_RANDOM_BYTES,
     BASE_CHUNK_SEQ_NUM_BYTE_POS,
@@ -53,9 +54,8 @@ impl PacketParser {
         data: &[u8]
     ) -> Result<DeserializedMessage, &'static str> {
         let parsed_message = match header.message {
-            | NetworkMessage::GetServerPlayerIDs
-            | NetworkMessage::GetOwnServerPlayerID
-            | NetworkMessage::ConnectToOtherWorld => header.message.clone(),
+            NetworkMessage::GetServerPlayerIDs | NetworkMessage::GetOwnServerPlayerID =>
+                header.message.clone(),
 
             NetworkMessage::ClientSentWorld(_) => NetworkMessage::ClientSentWorld(data.to_vec()),
 
@@ -63,7 +63,9 @@ impl PacketParser {
                 let player_inputs = parse_player_inputs(&data);
                 NetworkMessage::ClientSentPlayerInputs(player_inputs)
             }
-
+            NetworkMessage::ClientConnectToOtherWorld(_) => {
+                NetworkMessage::ClientConnectToOtherWorld(ServerPlayerID(data[0]))
+            }
             NetworkMessage::ServerSideAck(_) | NetworkMessage::ClientSideAck(_) => {
                 if data.len() < std::mem::size_of::<SeqNum>() {
                     return Err("Insufficient data for Ack message");
@@ -122,8 +124,7 @@ impl MsgBuffer {
                     NetworkMessage::GetOwnServerPlayerID |
                     NetworkMessage::ClientSentWorld(_) |
                     NetworkMessage::ClientSentPlayerInputs(_) |
-                    NetworkMessage::ClientSideAck(_) |
-                    NetworkMessage::ConnectToOtherWorld
+                    NetworkMessage::ClientSideAck(_)
             ),
             "Server received an invalid message type: {:?}",
             header.message
@@ -336,6 +337,14 @@ impl NetworkMessage {
                     bytes,
                 })
             }
+            Self::ClientConnectToOtherWorld(ref id) => {
+                Self::push_non_chunked(&mut bytes);
+                bytes.push(NetworkMessage::ClientConnectToOtherWorld(ServerPlayerID(0)).into());
+                bytes.push(id.0);
+                SerializedMessageType::from_serialized_msg(SerializedNetworkMessage {
+                    bytes,
+                })
+            }
             _ => {
                 Self::push_non_chunked(&mut bytes);
                 bytes.push(self.into());
@@ -376,7 +385,7 @@ impl From<NetworkMessage> for u8 {
             NetworkMessage::ServerSentPlayerIDs(_) => 6,
             NetworkMessage::ServerSentPlayerInputs(_) => 7,
             NetworkMessage::ServerSentWorld(_) => 8,
-            NetworkMessage::ConnectToOtherWorld => 9,
+            NetworkMessage::ClientConnectToOtherWorld(_) => 9,
         }
     }
 }
@@ -392,7 +401,7 @@ impl From<&NetworkMessage> for u8 {
             NetworkMessage::ServerSentPlayerIDs(_) => 6,
             NetworkMessage::ServerSentPlayerInputs(_) => 7,
             NetworkMessage::ServerSentWorld(_) => 8,
-            NetworkMessage::ConnectToOtherWorld => 9,
+            NetworkMessage::ClientConnectToOtherWorld(_) => 9,
         }
     }
 }
@@ -414,7 +423,7 @@ impl TryFrom<u8> for NetworkMessage {
             6 => Ok(NetworkMessage::ServerSentPlayerIDs(Vec::new())),
             7 => Ok(NetworkMessage::ServerSentPlayerInputs(Vec::new())),
             8 => Ok(NetworkMessage::ServerSentWorld(Vec::new())),
-            9 => Ok(NetworkMessage::ConnectToOtherWorld),
+            9 => Ok(NetworkMessage::ClientConnectToOtherWorld(ServerPlayerID(0))),
             _ => {
                 println!("Invalid value : {}", value);
                 Err("Invalid network msg u8 type ^^")

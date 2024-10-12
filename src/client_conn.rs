@@ -13,7 +13,7 @@ mod simulation {
     pub const PACKET_LOSS_PERCENTAGE: f32 = 75.0;
     pub const LATENCY_MS: Duration = Duration::from_millis(100);
 }
-const LOGGER: NetworkLogger = NetworkLogger { log: true };
+const LOGGER: NetworkLogger = NetworkLogger { log: false };
 use crate::{
     memory::PageAllocator,
     types::{
@@ -92,8 +92,10 @@ impl ConnectionServer {
                                 eprintln!("Error sending player inputs: {}", e);
                             }
                         },
-                        NetworkMessage::ConnectToOtherWorld => {
-
+                        NetworkMessage::ClientConnectToOtherWorld(id) => {
+                            if let Err(e) = self.connect_to_other_world(id) {
+                                eprintln!("Error sending player inputs: {}", e);
+                            }
                         }
                         _ => {
                             panic!("Tried to run server side NetworkMessage on client {:?}", request);
@@ -210,7 +212,9 @@ impl ConnectionServer {
                         match request.msg {
                             NetworkMessage::ServerSentWorld(data) => {}
                             NetworkMessage::ServerSentPlayerInputs(inputs) => {
-                                self.handle_recv_player_inputs(inputs);
+                                let _ = self.response_sender.send(
+                                    NetworkMessage::ServerSentPlayerInputs(inputs)
+                                );
                             }
                             NetworkMessage::ServerSideAck(type_of_ack) => {
                                 self.handle_ack(type_of_ack);
@@ -237,10 +241,6 @@ impl ConnectionServer {
                 }
             }
         }
-    }
-
-    fn handle_recv_player_inputs(&mut self, inputs: Vec<PlayerInput>) {
-        todo!()
     }
     fn handle_ack(&mut self, type_of_ack: SeqNum) {
         LOGGER.log_received_ack(type_of_ack.0);
@@ -279,7 +279,7 @@ impl ConnectionServer {
     }
 
     fn send_player_world_state(&mut self, sim_mem: Vec<u8>) -> Result<(), std::io::Error> {
-        let request = NetworkMessage::ClientSentWorld(sim_mem.clone());
+        let request = NetworkMessage::ClientSentWorld(sim_mem.clone()); // TODO REWRITE THIS TO JUST USE REQUEST
         self.send_reliable(&request)
     }
 
@@ -287,12 +287,15 @@ impl ConnectionServer {
         let request = NetworkMessage::GetServerPlayerIDs;
         self.send_reliable(&request)
     }
-
+    fn connect_to_other_world(&mut self, id: ServerPlayerID) -> Result<(), std::io::Error> {
+        let request = NetworkMessage::ClientConnectToOtherWorld(id);
+        self.send_reliable(&request)
+    }
     fn send_player_inputs(&mut self, inputs: &[PlayerInput]) -> Result<(), std::io::Error> {
         if inputs.len() == 0 {
             return Ok(());
         }
         let request = NetworkMessage::ClientSentPlayerInputs(inputs.to_vec());
-        self.send_reliable(&request)
+        self.send_unreliable(&request)
     }
 }

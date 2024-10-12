@@ -1,5 +1,5 @@
 use client_conn::ConnectionServer;
-use macroquad::prelude::*;
+use macroquad::{ input, prelude::* };
 use memory::{ PageAllocator, PAGE_SIZE_BYTES };
 use types::{
     Bullet,
@@ -199,7 +199,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let Some(NetworkMessage::ServerSentPlayerIDs(ids)) =
                         response_receiver.recv().await
                 {
-                    //println!("Received server player ids: {:?}", ids);
+                    println!("Received server player ids: {:?}", ids);
                     other_player_ids = ids;
                     game_state = GameState::ChoosePlayer;
                 }
@@ -227,18 +227,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     KeyCode::Key8,
                     KeyCode::Key9,
                 ];
-                let player_to_connect_to: ServerPlayerID;
+
                 for i in 0..9 {
                     if
                         is_key_pressed(keycodes[i as usize]) &&
                         (i as usize) < other_player_ids.len()
                     {
-                        player_to_connect_to = ServerPlayerID(other_player_ids[i as usize]);
-
+                        let player_to_connect_to: ServerPlayerID = ServerPlayerID(
+                            other_player_ids[i as usize]
+                        );
+                        request_sender.send(
+                            NetworkMessage::ClientConnectToOtherWorld(player_to_connect_to)
+                        )?;
                         break;
                     }
                 }
-
                 simulation = Some(Simulation::new(&mut allocator)); // You might want to modify this to create a client simulation
                 game_state = GameState::Playing;
             }
@@ -256,7 +259,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     if is_key_pressed(KeyCode::W) {
                         player1_inputs.push(PlayerInput::Shoot);
                     }
-                    let player2_inputs = Vec::new();
+                    let mut player2_inputs = Vec::new();
+                    //if
+                    //    let Some(NetworkMessage::ServerSentPlayerInputs(inputs)) =
+                    //        response_receiver.recv()
+                    //{
+                    //    println!("received player inputs");
+                    //    player2_inputs = inputs;
+                    //}
 
                     if timer > PHYSICS_FRAME_TIME {
                         timer_player_state_update += timer;

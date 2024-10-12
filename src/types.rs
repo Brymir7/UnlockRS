@@ -85,7 +85,7 @@ pub enum NetworkMessage {
     ServerSentPlayerInputs(Vec<PlayerInput>) = 7,
     ServerSentWorld(Vec<u8>) = 8,
 
-    ConnectToOtherWorld = 9,
+    ClientConnectToOtherWorld(ServerPlayerID) = 9,
 }
 #[derive(Eq, Hash, PartialEq, Debug, Clone, Copy)]
 pub struct SeqNum(pub u8);

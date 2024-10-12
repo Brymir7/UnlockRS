@@ -2,6 +2,7 @@ use std::hash::Hash;
 use std::net::{ SocketAddr, UdpSocket };
 use std::collections::HashMap;
 use std::time::{ Duration, Instant };
+use macroquad::input;
 use rand::seq;
 use types::{
     ChunkOfMessage,
@@ -24,6 +25,7 @@ struct Server {
     socket: UdpSocket,
     addr_to_player: HashMap<SocketAddr, ServerPlayerID>,
     pending_chunked_msgs: HashMap<SocketAddr, ChunkedMessageCollector>,
+    connections: HashMap<SocketAddr, Vec<SocketAddr>>,
     msg_buffer: MsgBuffer,
     pending_acks: HashMap<SocketAddr, HashMap<SeqNum, (Instant, SerializedNetworkMessage)>>,
     sequence_number: u8,
@@ -37,6 +39,7 @@ impl Server {
         Server {
             socket,
             addr_to_player,
+            connections: HashMap::new(),
             pending_chunked_msgs: HashMap::new(),
             msg_buffer,
             pending_acks: HashMap::new(),
@@ -45,7 +48,7 @@ impl Server {
     }
 
     pub fn update(&mut self) {
-        self.msg_buffer.clear();
+        self.msg_buffer.clear(); // can rewrite to only read amt bytes form scoket
         match self.socket.recv_from(&mut self.msg_buffer.0) {
             Ok((_, src)) => {
                 if !self.addr_to_player.contains_key(&src) {
@@ -71,8 +74,6 @@ impl Server {
                             self.send_ack(SeqNum(chunk.seq_num), &src);
                             if let Some(collector) = self.pending_chunked_msgs.get_mut(&src) {
                                 collector.collect(chunk);
-
-                                println!("collector collected");
                                 if let Some(msg) = collector.try_combine() {
                                     self.handle_message(msg, &src);
                                 }
@@ -136,6 +137,14 @@ impl Server {
         self.pending_acks.insert(*addr, HashMap::new());
         self.pending_chunked_msgs.insert(*addr, ChunkedMessageCollector::default());
     }
+    pub fn create_player_player_connection(
+        &mut self,
+        player1_addr: &SocketAddr,
+        player2_addr: &SocketAddr
+    ) {
+        self.connections.entry(*player1_addr).or_insert_with(Vec::new).push(*player2_addr);
+        self.connections.entry(*player2_addr).or_insert_with(Vec::new).push(*player1_addr);
+    }
 
     pub fn handle_message(&mut self, msg: DeserializedMessage, src: &SocketAddr) {
         if let Some(seq_num) = msg.seq_num {
@@ -155,6 +164,14 @@ impl Server {
             }
             NetworkMessage::ClientSentPlayerInputs(inputs) => {
                 println!("Processing player inputs from {:?}: {:?}", src, inputs);
+                if let Some(connections) = self.connections.get(src) {
+                    for conn in connections {
+                        self.send_unreliable(
+                            NetworkMessage::ServerSentPlayerInputs(inputs.clone()),
+                            conn
+                        );
+                    }
+                }
             }
             NetworkMessage::GetServerPlayerIDs => {
                 println!("Request for player IDS");
@@ -168,6 +185,9 @@ impl Server {
             }
             NetworkMessage::ClientSideAck(seq_num) => {
                 self.handle_ack(seq_num, src);
+            }
+            NetworkMessage::ClientConnectToOtherWorld(id) => {
+                println!("Connecting CALLER {:?} with TARGET {:?}", id, self.addr_to_player.get(src).unwrap());
             }
             _ => {
                 println!("Got some other message on server");
