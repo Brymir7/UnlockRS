@@ -26,6 +26,7 @@ use crate::{
         SerializedNetworkMessage,
         ServerPlayerID,
         Simulation,
+        SEQ_NUM_BYTE_POS,
     },
 };
 
@@ -75,35 +76,24 @@ impl ConnectionServer {
                         NetworkMessage::GetOwnServerPlayerID => {
                             todo!()
                         }
-                        NetworkMessage::GetPlayerInputs => {
-                            todo!()
-                        }
-                        NetworkMessage::GetWorldState=> {
-                            todo!()
-                        }
                         NetworkMessage::GetServerPlayerIDs => {
                             if let Err(e) = self.get_available_player_worlds() {
                                 eprintln!("Error getting available player worlds: {}", e);
                             }
                         },
-                        NetworkMessage::SendWorldState(sim_mem) => {
+                        NetworkMessage::ClientSentWorld(sim_mem) => {
                             if let Err(e) = self.send_player_world_state(sim_mem) {
                                 eprintln!("Error sending player world state: {}", e);
                             }
                         },
-                        NetworkMessage::SendPlayerInputs(inputs) => {
+                        NetworkMessage::ClientSentPlayerInputs(inputs) => {
                             if let Err(e) = self.send_player_inputs(&inputs) {
                                 eprintln!("Error sending player inputs: {}", e);
                             }
                         },
-                        NetworkMessage::ConnectToOtherWorld(other_player_id, mut alloc) => {
-                            match self.connect_to_other_world(other_player_id, &mut alloc) {
-                                Ok(simulation) => {
-                                    // Handle the new simulation
-                                },
-                                Err(e) => eprintln!("Error connecting to other world: {}", e),
-                            }
-                        },
+                        NetworkMessage::ConnectToOtherWorld => {
+
+                        }
                         _ => {
                             panic!("Tried to run server side NetworkMessage on client {:?}", request);
                         }
@@ -121,7 +111,7 @@ impl ConnectionServer {
     }
 
     pub fn send_unreliable(&self, request: &NetworkMessage) -> Result<(), std::io::Error> {
-        let serialized = request.serialize(crate::types::NetworkMessageType::Unreliable);
+        let serialized_message = request.serialize(crate::types::NetworkMessageType::Unreliable);
         #[cfg(feature = "simulation_mode")]
         {
             if rng_gen_range(0.0..100.0) < PACKET_LOSS_PERCENTAGE {
@@ -129,36 +119,82 @@ impl ConnectionServer {
                 return Ok(());
             }
         }
-        self.socket.send(&serialized.bytes)?;
-        Ok(())
+        match serialized_message {
+            crate::types::SerializedMessageType::NonChunked(serialized_message) => {
+                self.socket.send(&serialized_message.bytes)?;
+                Ok(())
+            }
+            crate::types::SerializedMessageType::Chunked(chunks) => {
+                panic!("Cannot send unreliable in chunks rn");
+            }
+        }
     }
 
     pub fn send_reliable(&mut self, request: &NetworkMessage) -> Result<(), std::io::Error> {
-        let serialized = request.serialize(
+        let serialized_message = request.serialize(
             crate::types::NetworkMessageType::Reliable(SeqNum(self.sequence_number))
         );
-        #[cfg(feature = "simulation_mode")]
-        {
-            if rng_gen_range(0.0..100.0) < PACKET_LOSS_PERCENTAGE {
+
+        match serialized_message {
+            crate::types::SerializedMessageType::Chunked(chunks) => {
+                for msg in chunks.bytes {
+                    #[cfg(feature = "simulation_mode")]
+                    {
+                        if rng_gen_range(0.0..100.0) < PACKET_LOSS_PERCENTAGE {
+                            self.pending_acks.insert(SeqNum(self.sequence_number), (
+                                Instant::now(),
+                                SerializedNetworkMessage { bytes: msg },
+                            ));
+                            self.sequence_number = self.sequence_number.wrapping_add(1);
+                            println!("Simulated packet loss for SeqNum {}", self.sequence_number);
+                            return Ok(());
+                        }
+                    }
+                    debug_assert!(msg[SEQ_NUM_BYTE_POS] == self.sequence_number);
+                    self.socket.send(&msg)?;
+                    self.pending_acks.insert(SeqNum(self.sequence_number), (
+                        Instant::now(),
+                        SerializedNetworkMessage { bytes: msg },
+                    ));
+                    self.sequence_number = self.sequence_number.wrapping_add(1);
+                }
+                return Ok(());
+            }
+            crate::types::SerializedMessageType::NonChunked(serialized_message) => {
+                #[cfg(feature = "simulation_mode")]
+                {
+                    if rng_gen_range(0.0..100.0) < PACKET_LOSS_PERCENTAGE {
+                        self.pending_acks.insert(SeqNum(self.sequence_number), (
+                            Instant::now(),
+                            serialized_message,
+                        ));
+                        self.sequence_number = self.sequence_number.wrapping_add(1);
+                        println!("Simulated packet loss for SeqNum {}", self.sequence_number);
+                        return Ok(());
+                    }
+                }
+                self.socket.send(&serialized_message.bytes)?;
                 self.pending_acks.insert(SeqNum(self.sequence_number), (
                     Instant::now(),
-                    serialized,
+                    serialized_message,
                 ));
                 self.sequence_number = self.sequence_number.wrapping_add(1);
-                println!("Simulated packet loss for SeqNum {}", self.sequence_number);
                 return Ok(());
             }
         }
-        self.socket.send(&serialized.bytes)?;
-        self.pending_acks.insert(SeqNum(self.sequence_number), (Instant::now(), serialized));
-        self.sequence_number = self.sequence_number.wrapping_add(1);
-        Ok(())
     }
     fn send_ack(&self, seq_num: SeqNum) {
         let ack_message = NetworkMessage::ClientSideAck(seq_num);
         let serialized_msg = ack_message.serialize(NetworkMessageType::Unreliable);
-        if let Err(e) = self.socket.send(&serialized_msg.bytes) {
-            eprintln!("Failed to send ACK to server: {}", e);
+        match serialized_msg {
+            crate::types::SerializedMessageType::NonChunked(serialized_msg) => {
+                if let Err(e) = self.socket.send(&serialized_msg.bytes) {
+                    eprintln!("Failed to send ACK to server: {}", e);
+                }
+            }
+            crate::types::SerializedMessageType::Chunked(_) => {
+                panic!("ack shouldnt be chunked");
+            }
         }
     }
     fn receive_messages(&mut self) {
@@ -171,16 +207,16 @@ impl ConnectionServer {
                             self.send_ack(SeqNum(seq_num));
                         }
                         match request.msg {
-                            NetworkMessage::SendWorldState(data) => {}
-                            NetworkMessage::SendPlayerInputs(inputs) => {
+                            NetworkMessage::ServerSentWorld(data) => {}
+                            NetworkMessage::ServerSentPlayerInputs(inputs) => {
                                 self.handle_recv_player_inputs(inputs);
                             }
                             NetworkMessage::ServerSideAck(type_of_ack) => {
                                 self.handle_ack(type_of_ack);
                             }
-                            NetworkMessage::SendServerPlayerIDs(ids) => {
+                            NetworkMessage::ServerSentPlayerIDs(ids) => {
                                 let _ = self.response_sender.send(
-                                    NetworkMessage::SendServerPlayerIDs(ids)
+                                    NetworkMessage::ServerSentPlayerIDs(ids)
                                 );
                             }
                             _ => {}
@@ -237,7 +273,7 @@ impl ConnectionServer {
     }
 
     fn send_player_world_state(&mut self, sim_mem: Vec<u8>) -> Result<(), std::io::Error> {
-        let request = NetworkMessage::SendWorldState(sim_mem.clone());
+        let request = NetworkMessage::ClientSentWorld(sim_mem.clone());
         self.send_reliable(&request)
     }
 
@@ -246,20 +282,11 @@ impl ConnectionServer {
         self.send_reliable(&request)
     }
 
-    fn connect_to_other_world(
-        &mut self,
-        other_player_id: ServerPlayerID,
-        alloc: &mut PageAllocator
-    ) -> Result<Simulation, std::io::Error> {
-        todo!();
-    }
-
     fn send_player_inputs(&mut self, inputs: &[PlayerInput]) -> Result<(), std::io::Error> {
         if inputs.len() == 0 {
             return Ok(());
         }
-        let request = NetworkMessage::SendPlayerInputs(inputs.to_vec());
+        let request = NetworkMessage::ClientSentPlayerInputs(inputs.to_vec());
         self.send_reliable(&request)
     }
-
 }
