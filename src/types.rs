@@ -145,3 +145,7 @@ pub struct MessageHeader {
 }
 
 pub struct PacketParser;
+
+pub struct NetworkLogger {
+    pub log: bool,
+}

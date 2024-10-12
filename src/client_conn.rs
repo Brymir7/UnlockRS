@@ -13,12 +13,13 @@ mod simulation {
     pub const PACKET_LOSS_PERCENTAGE: f32 = 25.0;
     pub const LATENCY_MS: Duration = Duration::from_millis(100);
 }
-
+const LOGGER: NetworkLogger = NetworkLogger { log: false };
 use crate::{
     memory::PageAllocator,
     types::{
         ChunkedSerializedNetworkMessage,
         MsgBuffer,
+        NetworkLogger,
         NetworkMessage,
         NetworkMessageType,
         PlayerInput,
@@ -115,7 +116,7 @@ impl ConnectionServer {
         #[cfg(feature = "simulation_mode")]
         {
             if rng_gen_range(0.0..100.0) < PACKET_LOSS_PERCENTAGE {
-                println!("Simulated packet loss for SeqNum {}", self.sequence_number);
+                LOGGER.log_simulated_packet_loss(self.sequence_number);
                 return Ok(());
             }
         }
@@ -146,7 +147,7 @@ impl ConnectionServer {
                                 SerializedNetworkMessage { bytes: msg },
                             ));
                             self.sequence_number = self.sequence_number.wrapping_add(1);
-                            println!("Simulated packet loss for SeqNum {}", self.sequence_number);
+                            LOGGER.log_simulated_packet_loss(self.sequence_number);
                             return Ok(());
                         }
                     }
@@ -169,7 +170,7 @@ impl ConnectionServer {
                             serialized_message,
                         ));
                         self.sequence_number = self.sequence_number.wrapping_add(1);
-                        println!("Simulated packet loss for SeqNum {}", self.sequence_number);
+                        LOGGER.log_simulated_packet_loss(self.sequence_number);
                         return Ok(());
                     }
                 }
@@ -242,9 +243,14 @@ impl ConnectionServer {
         todo!()
     }
     fn handle_ack(&mut self, type_of_ack: SeqNum) {
-        println!("Received ack from server {}", type_of_ack.0);
+        LOGGER.log_received_ack(type_of_ack.0);
         self.pending_acks.remove(&type_of_ack);
-        println!("self.pendingacks {:?}", self.pending_acks.keys())
+        LOGGER.log_pending_acks(
+            self.pending_acks
+                .keys()
+                .map(|k| *k)
+                .collect()
+        )
     }
     fn handle_retransmissions(&mut self) {
         let now = Instant::now();
@@ -259,7 +265,7 @@ impl ConnectionServer {
         for (seq, request) in to_retry {
             if let Some((ref mut sent_time, _)) = self.pending_acks.get_mut(&seq) {
                 *sent_time = now;
-                println!("sent retranmission");
+                LOGGER.log_sent_retransmission(seq.0);
                 if let Err(e) = self.socket.send(&request.bytes) {
                     eprintln!("Failed to resend message {:?}: {}", seq, e);
                 }
