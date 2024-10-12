@@ -50,15 +50,14 @@ impl PacketParser {
     }
     fn parse_data(
         header: &MessageHeader,
-        bytes: &[u8]
+        data: &[u8]
     ) -> Result<DeserializedMessage, &'static str> {
-        let data = bytes[DATA_BIT_START_POS..].to_vec();
         let parsed_message = match header.message {
             | NetworkMessage::GetServerPlayerIDs
             | NetworkMessage::GetOwnServerPlayerID
             | NetworkMessage::ConnectToOtherWorld => header.message.clone(),
 
-            NetworkMessage::ClientSentWorld(_) => NetworkMessage::ClientSentWorld(data),
+            NetworkMessage::ClientSentWorld(_) => NetworkMessage::ClientSentWorld(data.to_vec()),
 
             NetworkMessage::ClientSentPlayerInputs(_) => {
                 let player_inputs = parse_player_inputs(&data);
@@ -77,14 +76,15 @@ impl PacketParser {
                 }
             }
 
-            NetworkMessage::ServerSentPlayerIDs(_) => NetworkMessage::ServerSentPlayerIDs(data),
+            NetworkMessage::ServerSentPlayerIDs(_) =>
+                NetworkMessage::ServerSentPlayerIDs(data.to_vec()),
 
             NetworkMessage::ServerSentPlayerInputs(_) => {
                 let player_inputs = parse_player_inputs(&data);
                 NetworkMessage::ServerSentPlayerInputs(player_inputs)
             }
 
-            NetworkMessage::ServerSentWorld(_) => NetworkMessage::ServerSentWorld(data),
+            NetworkMessage::ServerSentWorld(_) => NetworkMessage::ServerSentWorld(data.to_vec()),
         };
 
         if header.reliable {
@@ -135,11 +135,11 @@ impl MsgBuffer {
                     seq_num: header.seq_num.unwrap().0,
                     base_seq_num: header.base_chunk_seq_num,
                     amt_of_chunks: header.amt_of_chunks,
-                    data_bytes: bytes[DATA_BIT_START_POS..].to_vec(),
+                    data_bytes: *bytes,
                 })
             );
         }
-        let parsed_data = PacketParser::parse_data(&header, bytes)?;
+        let parsed_data = PacketParser::parse_data(&header, &bytes[DATA_BIT_START_POS..].to_vec())?;
 
         Ok(DeserializedMessageType::NonChunked(parsed_data))
     }
@@ -166,8 +166,7 @@ impl MsgBuffer {
             header.message
         );
 
-        let parsed_data = PacketParser::parse_data(&header, bytes)?;
-
+        let parsed_data = PacketParser::parse_data(&header, &bytes[DATA_BIT_START_POS..].to_vec())?;
         Ok(parsed_data)
     }
 }
@@ -214,12 +213,15 @@ impl NetworkMessage {
         msg_type: NetworkMessageType
     ) -> SerializedMessageType {
         let amt_of_chunks = (data.len() + PAYLOAD_DATA_LENGTH - 1) / PAYLOAD_DATA_LENGTH;
-        debug_assert!(amt_of_chunks < (u8::MAX as usize));
-        let byte_chunks: Vec<Vec<u8>> = Vec::new();
+        debug_assert!(amt_of_chunks < (u8::MAX as usize), "{}", amt_of_chunks);
+        let mut byte_chunks: Vec<Vec<u8>> = Vec::new();
+        let mut rng = rand::thread_rng();
+        let random_bytes: Vec<u8> = (0..AMT_RANDOM_BYTES).map(|_| rng.gen()).collect(); // First few random bytes (3 bytes in this example)
         for i in 0..amt_of_chunks {
             let mut msg_bytes = Vec::new();
             match msg_type {
                 NetworkMessageType::Reliable(seq_num) => {
+                    msg_bytes.extend(random_bytes.clone());
                     msg_bytes.push(1); // true
                     msg_bytes.push(seq_num.0.wrapping_add(i as u8));
                     msg_bytes.push(seq_num.0);
@@ -236,8 +238,10 @@ impl NetworkMessage {
                     panic!("Cannot send chunked message unreliable");
                 }
             }
-
-            msg_bytes.extend(&data[i * PAYLOAD_DATA_LENGTH..(i + 1) * PAYLOAD_DATA_LENGTH]);
+            msg_bytes.extend(
+                &data[i * PAYLOAD_DATA_LENGTH..((i + 1) * PAYLOAD_DATA_LENGTH).min(data.len())]
+            );
+            byte_chunks.push(msg_bytes);
         }
         return SerializedMessageType::from_chunked_msg(byte_chunks);
     }
@@ -411,7 +415,10 @@ impl TryFrom<u8> for NetworkMessage {
             7 => Ok(NetworkMessage::ServerSentPlayerInputs(Vec::new())),
             8 => Ok(NetworkMessage::ServerSentWorld(Vec::new())),
             9 => Ok(NetworkMessage::ConnectToOtherWorld),
-            _ => Err("Invalid network msg u8 type"),
+            _ => {
+                println!("Invalid value : {}", value);
+                Err("Invalid network msg u8 type ^^")
+            }
         }
     }
 }
@@ -428,36 +435,39 @@ impl SerializedMessageType {
 }
 
 impl ChunkedMessageCollector {
-    fn default() -> Self {
+    pub fn default() -> Self {
         const ARRAY_REPEAT_VALUE: Vec<ChunkOfMessage> = Vec::new();
         return ChunkedMessageCollector {
-            msgs: [ARRAY_REPEAT_VALUE; u8::MAX as usize],
+            msgs: [ARRAY_REPEAT_VALUE; (u8::MAX as usize) + 1], // need 256 so that 255 is valid index -> u8:max needs to be a valid index see self.msgs[chunk.seq_num]
         };
     }
-    fn collect(&mut self, chunk: ChunkOfMessage) {
-        self.msgs[chunk.seq_num as usize].push(chunk);
+    pub fn collect(&mut self, chunk: ChunkOfMessage) {
+        self.msgs[chunk.base_seq_num as usize].push(chunk);
     }
-    fn try_combine(&mut self) -> Option<DeserializedMessage> {
+    pub fn try_combine(&mut self) -> Option<DeserializedMessage> {
         for msg in &mut self.msgs {
             msg.sort_by_key(|chunk| chunk.seq_num);
             if let Some(last_msg) = msg.last() {
                 if
                     last_msg.seq_num ==
-                        last_msg.base_seq_num.wrapping_add(last_msg.amt_of_chunks) &&
+                        last_msg.base_seq_num.wrapping_add(last_msg.amt_of_chunks - 1) && // first packet will have base_Seq_num so last packet wioll be amt_ofchunks-1 away
                     (last_msg.amt_of_chunks as usize) == msg.len()
                 {
                     let total_data_bytes: Vec<u8> = msg
-                        .iter_mut()
-                        .flat_map(|chunk| chunk.data_bytes.split_off(DATA_BIT_START_POS))
+                        .iter()
+                        .flat_map(|chunk| chunk.data_bytes[DATA_BIT_START_POS..].to_vec())
                         .collect();
-                    let header = msg[0].data_bytes.split_off(0);
-                    let header = PacketParser::parse_header(&header);
+                    let header = PacketParser::parse_header(&msg[0].data_bytes);
                     match header {
                         Ok(header) => {
-                            let msg = PacketParser::parse_data(&header, &total_data_bytes);
-                            match msg {
-                                Ok(msg) => {
-                                    return Some(msg);
+                            let deserialized_message = PacketParser::parse_data(
+                                &header,
+                                &total_data_bytes
+                            );
+                            match deserialized_message {
+                                Ok(deserialized_message) => {
+                                    msg.clear();
+                                    return Some(deserialized_message);
                                 }
                                 Err(e) => eprintln!("Failed to parse data of chunk: {}", e),
                             }
@@ -492,6 +502,11 @@ impl NetworkLogger {
     pub fn log_sent_retransmission(&self, seq_num: u8) {
         if self.log {
             println!("Sent retransmission for SeqNum: {}", seq_num);
+        }
+    }
+    pub fn log_sent_packet(&self, seq_num: u8) {
+        if self.log {
+            println!("Sent packet {}", seq_num);
         }
     }
 }

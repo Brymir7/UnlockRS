@@ -15,6 +15,7 @@ use types::{
 };
 use crate::types::NetworkMessage;
 const PHYSICS_FRAME_TIME: f32 = 1.0 / 60.0;
+const SENT_PLAYER_STATE_TIME: f32 = 5.0;
 mod types;
 mod type_impl;
 mod client_conn;
@@ -163,7 +164,7 @@ impl Simulation {
 
 #[macroquad::main("2 Player Cube Shooter")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut allocator = PageAllocator::new(1024 * 1024 * 1, PAGE_SIZE_BYTES);
+    let mut allocator = PageAllocator::new(PAGE_SIZE_BYTES * 3, PAGE_SIZE_BYTES);
     let mut simulation: Option<Simulation> = None;
     let (connection_server, request_sender, mut response_receiver) = ConnectionServer::new()?;
     let runtime = tokio::runtime::Runtime::new()?;
@@ -174,6 +175,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut game_state = GameState::ChooseMode;
     let mut other_player_ids: Vec<u8> = Vec::new();
     let mut timer = 0.0;
+    let mut timer_player_state_update = 0.0;
     loop {
         clear_background(BLACK);
 
@@ -257,11 +259,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let player2_inputs = Vec::new();
 
                     if timer > PHYSICS_FRAME_TIME {
+                        timer_player_state_update += timer;
                         timer = 0.0;
                         sim.update(dt, &player1_inputs, &player2_inputs, &mut allocator);
                         request_sender.send(
                             NetworkMessage::ClientSentPlayerInputs(player1_inputs.clone())
                         )?;
+                    }
+                    if timer_player_state_update > SENT_PLAYER_STATE_TIME {
+                        request_sender.send(
+                            NetworkMessage::ClientSentWorld(allocator.get_copy_of_state())
+                        )?;
+                        println!(
+                            "state first 10 bytes {:?}",
+                            allocator.get_copy_of_state()[0..100].to_vec()
+                        );
+                        timer_player_state_update = 0.0;
                     }
 
                     sim.draw(&allocator);
