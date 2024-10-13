@@ -244,12 +244,22 @@ impl Server {
     }
     pub fn send_reliable(&mut self, msg: NetworkMessage, dst: &SocketAddr) {
         let seq_num = SeqNum(self.sequence_number);
+        println!("trying to send message x to client {:?}", msg);
+
         let serialized_msg = msg.serialize(types::NetworkMessageType::Reliable(seq_num));
         match serialized_msg {
             SerializedMessageType::Chunked(chunks) => {
                 for msg in chunks.bytes {
+                    println!("sending chunked msg to client");
                     debug_assert!(msg[SEQ_NUM_BYTE_POS] == self.sequence_number);
-                    self.socket.send(&msg);
+                    // let msg_buffer = MsgBuffer(msg.clone().try_into().unwrap());
+                    // debug_assert!(match msg_buffer.parse_on_client().expect("...") {
+                    //     DeserializedMessageType::ChunkOfMessage(_) => true,
+                    //     DeserializedMessageType::NonChunked(_) => false,
+                    // });
+                    if let Err(e) = self.socket.send_to(&msg, dst) {
+                        eprintln!("Failed to send reliable message to {:?}: {}", dst, e);
+                    }
                     self.pending_acks
                         .entry(*dst)
                         .or_insert_with(HashMap::new)

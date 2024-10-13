@@ -113,6 +113,7 @@ impl ConnectionServer {
                                     let _ = ack_sender.send(SeqNum(chunk.seq_num));
                                     let mut chunk_collector = chunk_collector.lock().unwrap();
                                     chunk_collector.collect(chunk);
+                                    println!("Collected chunk");
                                     if let Some(msg) = chunk_collector.try_combine() {
                                         let _ = msg_sender.send(msg.msg);
                                     }
@@ -136,6 +137,7 @@ impl ConnectionServer {
             if let Ok(msg) = self.network_msg_receiver.try_recv() {
                 match msg {
                     NetworkMessage::ServerSentWorld(data) => {
+                        println!("server sent world arrived");
                         let _ = self.server_msg_sender.send(NetworkMessage::ServerSentWorld(data));
                     }
                     NetworkMessage::ServerSentPlayerInputs(inputs) => {
