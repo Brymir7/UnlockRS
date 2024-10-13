@@ -1,5 +1,5 @@
 use macroquad::{ color::Color, math::Vec2 };
-use crate::memory::{ FixedDataPtr, PageAllocator };
+use crate::memory::FixedDataPtr;
 pub const MAX_UDP_PAYLOAD_LEN: usize = 508; // https://stackoverflow.com/questions/1098897/what-is-the-largest-safe-udp-packet-size-on-the-internet
 pub const PAYLOAD_DATA_LENGTH: usize = MAX_UDP_PAYLOAD_LEN - DATA_BIT_START_POS;
 pub const MAX_BULLETS: usize = 5;
@@ -39,6 +39,7 @@ pub struct Enemy {
 pub struct Simulation {
     pub player1: FixedDataPtr<Player>,
     pub player2: FixedDataPtr<Player>,
+    pub amount_of_enemies: FixedDataPtr<u8>,
     pub enemies: FixedDataPtr<[Enemy; MAX_ENEMIES]>,
     pub spawn_timer: FixedDataPtr<f64>,
 }

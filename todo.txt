@@ -4,6 +4,10 @@ implement usable inputs
 implement showcasing world state by just copying it back and forth to verify
 implement simulation + updates on 2 clients
 
+
+
+use compressed format for sending over world state, -> get all data from alloc and then serialize like usual
+
 todo! _> dynamic max packet length
 todo! _> dynamic connections, reconnections
 todo! _> encryption, verification using 2 keys 

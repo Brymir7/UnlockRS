@@ -10,7 +10,6 @@ use crate::types::{
     NetworkMessage,
     NetworkMessageType,
     PacketParser,
-    Player,
     PlayerInput,
     SeqNum,
     SerializedMessageType,
@@ -78,9 +77,11 @@ impl PacketParser {
                 }
             }
 
-            NetworkMessage::ServerSentPlayerIDs(_) =>
-                NetworkMessage::ServerSentPlayerIDs(data.to_vec()),
-
+            NetworkMessage::ServerSentPlayerIDs(_) =>{
+                let amt = data[0] as usize;
+                println!("server sent player ids amt {}", amt);
+                NetworkMessage::ServerSentPlayerIDs(data[..amt].to_vec())
+            }
             NetworkMessage::ServerSentPlayerInputs(_) => {
                 let player_inputs = parse_player_inputs(&data);
                 NetworkMessage::ServerSentPlayerInputs(player_inputs)
@@ -205,7 +206,7 @@ impl DeserializedMessage {
         }
     }
 }
-use rand::{ seq, Rng };
+use rand::Rng;
 impl NetworkMessage {
     pub fn chunk_message(
         &self,
@@ -332,6 +333,7 @@ impl NetworkMessage {
                 debug_assert!(ids.len() <= (u8::MAX as usize));
                 bytes.push(ids.len() as u8);
                 bytes.extend(ids);
+                println!("length of server send ids {}", ids.len() as u8);
                 debug_assert!(bytes[VECTOR_LEN_BYTE_POS] == (ids.len() as u8));
                 SerializedMessageType::from_serialized_msg(SerializedNetworkMessage {
                     bytes,
