@@ -135,7 +135,9 @@ impl ConnectionServer {
             }
             if let Ok(msg) = self.network_msg_receiver.try_recv() {
                 match msg {
-                    NetworkMessage::ServerSentWorld(data) => {}
+                    NetworkMessage::ServerSentWorld(data) => {
+                        let _ = self.server_msg_sender.send(NetworkMessage::ServerSentWorld(data));
+                    }
                     NetworkMessage::ServerSentPlayerInputs(inputs) => {
                         let _ = self.server_msg_sender.send(
                             NetworkMessage::ServerSentPlayerInputs(inputs)

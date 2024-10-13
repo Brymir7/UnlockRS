@@ -53,7 +53,7 @@ impl PacketParser {
         header: &MessageHeader,
         data: &[u8]
     ) -> Result<DeserializedMessage, &'static str> {
-        debug_assert!(data.len() == PAYLOAD_DATA_LENGTH);
+        debug_assert!(data.len() % PAYLOAD_DATA_LENGTH == 0, "data.len {}", data.len()); // either its 1 packet or its multiple packets of this size
         // HEADER IS REMOVED from data; ONLY DATA HERE
         let parsed_message = match header.message {
             | NetworkMessage::GetServerPlayerIDs
@@ -175,7 +175,8 @@ impl MsgBuffer {
                 NetworkMessage::ServerSideAck(_) |
                     NetworkMessage::ServerSentPlayerIDs(_) |
                     NetworkMessage::ServerSentPlayerInputs(_) |
-                    NetworkMessage::ServerSentWorld(_) | NetworkMessage::ServerRequestHostForWorldData
+                    NetworkMessage::ServerSentWorld(_) |
+                    NetworkMessage::ServerRequestHostForWorldData
             ),
             "Client received an invalid message type: {:?}",
             header.message
@@ -460,6 +461,7 @@ impl TryFrom<u8> for NetworkMessage {
             7 => Ok(NetworkMessage::ServerSentPlayerInputs(NetworkedPlayerInputs::placeholder())),
             8 => Ok(NetworkMessage::ServerSentWorld(Vec::new())),
             9 => Ok(NetworkMessage::ClientConnectToOtherWorld(ServerPlayerID(0))),
+            10 => Ok(NetworkMessage::ServerRequestHostForWorldData),
             _ => {
                 println!("Invalid value : {}", value);
                 Err("Invalid network msg u8 type ^^")

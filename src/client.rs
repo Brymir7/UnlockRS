@@ -368,6 +368,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 );
                             }
                             NetworkMessage::ServerRequestHostForWorldData => {
+                                println!("Sending state to server");
                                 request_sender.send(
                                     NetworkMessage::ClientSentWorld(allocator.get_copy_of_state())
                                 )?;

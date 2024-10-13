@@ -172,7 +172,8 @@ impl Server {
         match msg {
             NetworkMessage::ClientSentWorld(data) => {
                 // RELAY WORLD
-                self.broadcast_reliable(NetworkMessage::ClientSentWorld(data), src);
+                println!("received world state from client");
+                self.broadcast_reliable(NetworkMessage::ServerSentWorld(data), src);
             }
             NetworkMessage::ClientSentPlayerInputs(inputs) => {
                 // RELAY INPUTS
