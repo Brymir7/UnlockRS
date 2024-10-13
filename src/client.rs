@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{ collections::VecDeque, sync::Arc, time::Duration };
 
 use client_conn::ConnectionServer;
 use macroquad::{ input, prelude::* };
@@ -86,12 +86,16 @@ impl Simulation {
         let enemies_arr_ptr = alloc
             .alloc_and_write_fixed(&[Enemy::new(-5.0, -5.0); MAX_ENEMIES as usize])
             .expect("Failed to alloc enemies");
+        let amount_of_enemies = alloc
+            .alloc_and_write_fixed(&(0 as u8))
+            .expect("Failed to alloc amount of enemies");
         let spawn_timer_ptr = alloc
             .alloc_and_write_fixed(&get_time())
             .expect("Failed to alloc spawn timer");
         Self {
             player1: player_ptr,
             player2: player_ptr,
+            amount_of_enemies: amount_of_enemies,
             enemies: enemies_arr_ptr,
             spawn_timer: spawn_timer_ptr,
         }
@@ -127,8 +131,11 @@ impl Simulation {
     fn draw(&self, alloc: &PageAllocator) {
         alloc.read_fixed(&self.player1).draw();
         alloc.read_fixed(&self.player2).draw();
-        for enemy in &alloc.read_fixed(&self.enemies) {
-            enemy.draw();
+        let enemy_amount = alloc.read_fixed(&self.amount_of_enemies);
+        for (i, enemy) in alloc.read_fixed(&self.enemies).iter().enumerate() {
+            if i < (enemy_amount as usize) {
+                enemy.draw();
+            }
         }
     }
 
@@ -163,10 +170,67 @@ impl Simulation {
         }
     }
 }
+pub const PLAYER_COUNT: u8 = 2;
+#[derive(Debug)]
+struct PlayerInputs {
+    keycode: [Option<Vec<PlayerInput>>; PLAYER_COUNT as usize],
+    frame: u32,
+}
+impl PlayerInputs {
+    fn new(curr_player_input: Vec<PlayerInput>, frame: u32) -> Self {
+        PlayerInputs {
+            keycode: [Some(curr_player_input), None],
+            frame,
+        }
+    }
+    fn insert_other_player_input(&mut self, other: Vec<PlayerInput>, player_idx: u8) {
+        self.keycode[player_idx as usize] = Some(other);
+    }
+    fn is_verified(&self) -> bool {
+        return self.keycode.iter().all(|key| key.is_some());
+    }
+}
+#[derive(Debug)]
+struct InputBuffer {
+    inputs: VecDeque<PlayerInputs>,
+}
 
+impl InputBuffer {
+    fn new() -> Self {
+        InputBuffer {
+            inputs: VecDeque::new(),
+        }
+    }
+
+    fn insert_curr_player(&mut self, inp: Vec<PlayerInput>) {
+        if self.inputs.is_empty() {
+            self.inputs.push_back(PlayerInputs::new(inp, 0));
+        } else {
+            self.inputs.push_back(PlayerInputs::new(inp, self.inputs.back().unwrap().frame + 1));
+        }
+    }
+
+    fn insert_networked_player_input(&mut self, inp: Vec<PlayerInput>, frame: u32, player_idx: u8) {
+        for input in self.inputs.iter_mut() {
+            if input.frame == frame {
+                input.insert_other_player_input(inp, player_idx);
+                return;
+            }
+            debug_assert!(
+                input.frame <= frame,
+                "Inputs are out of order; couldn't find frame despite having searched linearly over all frames until frame"
+            );
+        }
+        panic!("Tried to insert an input for a frame that doesn't exist on this player")
+    }
+
+    fn get_first_verified_input(&self) -> Option<&PlayerInputs> {
+        self.inputs.iter().find(|input| input.is_verified())
+    }
+}
 #[macroquad::main("2 Player Cube Shooter")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut allocator = PageAllocator::new(PAGE_SIZE_BYTES * 3, PAGE_SIZE_BYTES);
+    let mut allocator = PageAllocator::new(PAGE_SIZE_BYTES * 4, PAGE_SIZE_BYTES);
     let mut simulation: Option<Simulation> = None;
     let (connection_server, request_sender, response_receiver) = ConnectionServer::new()?;
     ConnectionServer::start(Arc::clone(&connection_server));
@@ -175,6 +239,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut other_player_ids: Vec<u8> = Vec::new();
     let mut timer = 0.0;
     let mut timer_player_state_update = 0.0;
+    let mut input_buffer = InputBuffer::new();
     loop {
         clear_background(BLACK);
 
@@ -195,7 +260,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             GameState::WaitingForPlayerList => {
                 draw_text("Waiting for player list...", 20.0, 40.0, 30.0, WHITE);
                 if let Ok(NetworkMessage::ServerSentPlayerIDs(ids)) = response_receiver.recv() {
-                    println!("Received server player ids: {:?}", ids);
+                    println!("received ids {:?}", ids);
                     other_player_ids = ids;
                     game_state = GameState::ChoosePlayer;
                 }
@@ -223,7 +288,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     KeyCode::Key8,
                     KeyCode::Key9,
                 ];
-
+                let mut chose_player = false;
                 for i in 0..9 {
                     if
                         is_key_pressed(keycodes[i as usize]) &&
@@ -235,11 +300,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         request_sender.send(
                             NetworkMessage::ClientConnectToOtherWorld(player_to_connect_to)
                         )?;
+                        chose_player = true;
                         break;
                     }
                 }
-                simulation = Some(Simulation::new(&mut allocator)); // You might want to modify this to create a client simulation
-                game_state = GameState::Playing;
+                if chose_player {
+                    simulation = Some(Simulation::new(&mut allocator));
+                    game_state = GameState::Playing;
+                }
             }
             GameState::Playing => {
                 if let Some(ref mut sim) = simulation {
@@ -255,16 +323,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     if is_key_pressed(KeyCode::W) {
                         player1_inputs.push(PlayerInput::Shoot);
                     }
+
                     let mut player2_inputs = Vec::new();
-                    //if
-                    //    let Some(NetworkMessage::ServerSentPlayerInputs(inputs)) =
-                    //        response_receiver.recv()
-                    //{
-                    //    println!("received player inputs");
-                    //    player2_inputs = inputs;
-                    //}
+                    if
+                        let Ok(NetworkMessage::ServerSentPlayerInputs(inputs)) =
+                            response_receiver.recv_timeout(Duration::from_millis(1))
+                    {
+                        println!("received player inputs");
+                        player2_inputs = inputs;
+                    }
 
                     if timer > PHYSICS_FRAME_TIME {
+                        input_buffer.insert_curr_player(player1_inputs.clone());
                         timer_player_state_update += timer;
                         timer = 0.0;
                         sim.update(dt, &player1_inputs, &player2_inputs, &mut allocator);

@@ -7,7 +7,7 @@ use std::{
 };
 
 #[cfg(feature = "simulation_mode")]
-use simulation::{ LATENCY_MS, PACKET_LOSS_PERCENTAGE, rng_gen_range };
+use simulation::{ PACKET_LOSS_PERCENTAGE, rng_gen_range };
 #[cfg(feature = "simulation_mode")]
 mod simulation {
     use std::{ ops::Range, time::Duration };
@@ -20,10 +20,7 @@ mod simulation {
     pub const LATENCY_MS: Duration = Duration::from_millis(100);
 }
 const LOGGER: NetworkLogger = NetworkLogger { log: false };
-use crate::{
-    memory::PageAllocator,
-    types::{
-        ChunkedSerializedNetworkMessage,
+use crate::types::{
         MsgBuffer,
         NetworkLogger,
         NetworkMessage,
@@ -32,10 +29,8 @@ use crate::{
         SeqNum,
         SerializedNetworkMessage,
         ServerPlayerID,
-        Simulation,
         SEQ_NUM_BYTE_POS,
-    },
-};
+    };
 
 const MAX_RETRIES: u32 = 8;
 const RETRY_TIMEOUT: Duration = Duration::from_millis(250);
