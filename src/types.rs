@@ -144,6 +144,7 @@ pub enum GameState {
 pub struct ChunkedMessageCollector {
     pub msgs: [Vec<ChunkOfMessage>; (u8::MAX as usize) + 1],
 }
+#[derive(Debug)]
 pub struct MessageHeader {
     pub reliable: bool,
     pub seq_num: Option<SeqNum>,

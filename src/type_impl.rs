@@ -165,9 +165,7 @@ impl MsgBuffer {
         if bytes.is_empty() {
             return Err("Empty buffer");
         }
-
         let header = PacketParser::parse_header(bytes)?;
-
         // Debug assert to ensure only server-sent events are received on the client
         debug_assert!(
             matches!(
@@ -307,16 +305,22 @@ impl NetworkMessage {
         }
 
         match *self {
-            Self::ClientSentWorld(ref sim) => {
+            Self::ClientSentWorld(ref sim) | Self::ServerSentWorld(ref sim) => {
+                let discriminator: u8 = match *self {
+                    Self::ClientSentWorld(_) => {
+                        NetworkMessage::ClientSentWorld(Vec::new()).into()
+                    }
+                    Self::ServerSentWorld(_) => {
+                        NetworkMessage::ServerSentWorld(Vec::new()).into()
+                    }
+                    _ => { panic!() }
+                };
                 if sim.len() > PAYLOAD_DATA_LENGTH {
-                    return self.chunk_message(
-                        NetworkMessage::ClientSentWorld(Vec::new()).into(),
-                        &sim,
-                        msg_type
-                    );
+                    println!("chunking message");
+                    return self.chunk_message(discriminator, &sim, msg_type);
                 } else {
                     Self::push_non_chunked(&mut bytes);
-                    bytes.push(NetworkMessage::ClientSentWorld(Vec::new()).into());
+                    bytes.push(discriminator);
                     bytes.extend(sim); // append actual Vec<u8> data
                     return SerializedMessageType::from_serialized_msg(SerializedNetworkMessage {
                         bytes,

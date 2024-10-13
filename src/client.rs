@@ -257,7 +257,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut verified_simulation: Option<Simulation> = None;
     let (connection_server, request_sender, response_receiver) = ConnectionServer::new()?;
     ConnectionServer::start(Arc::clone(&connection_server));
-
+    let mut chose_player = false;
     let mut game_state = GameState::ChooseMode;
     let mut other_player_ids: Vec<u8> = Vec::new();
     let mut timer = 0.0;
@@ -281,7 +281,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             GameState::WaitingForPlayerList => {
                 draw_text("Waiting for player list...", 20.0, 40.0, 30.0, WHITE);
-                if let Ok(NetworkMessage::ServerSentPlayerIDs(ids)) = response_receiver.recv() {
+                if
+                    let Ok(NetworkMessage::ServerSentPlayerIDs(ids)) =
+                        response_receiver.recv_timeout(Duration::from_millis(20))
+                {
                     println!("received ids {:?}", ids);
                     other_player_ids = ids;
                     game_state = GameState::ChoosePlayer;
@@ -310,7 +313,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     KeyCode::Key8,
                     KeyCode::Key9,
                 ];
-                let mut chose_player = false;
+
                 for i in 0..9 {
                     if
                         is_key_pressed(keycodes[i as usize]) &&
@@ -328,11 +331,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
 
                 if chose_player {
-                    if let Ok(NetworkMessage::ServerSentWorld(data)) = response_receiver.recv() {
+                    if
+                        let Ok(NetworkMessage::ServerSentWorld(data)) =
+                            response_receiver.recv_timeout(Duration::from_millis(20))
+                    {
                         println!("Received world");
                         predicted_simulation = Some(
                             Simulation::new_from_serialized(data, &mut allocator)
                         );
+                        println!("len simulation data {}", allocator.get_copy_of_state().len());
                         game_state = GameState::Playing;
                     }
                 }
