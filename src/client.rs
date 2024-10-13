@@ -333,6 +333,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             response_receiver.recv_timeout(Duration::from_millis(1))
                     {
                         println!("received player inputs");
+                        println!("player inputs frame {:?}", inputs);
                         player2_inputs = inputs.inputs;
                         let player_idx = 1;
                         debug_assert!(player_idx < PLAYER_COUNT);
