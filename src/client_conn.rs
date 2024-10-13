@@ -21,6 +21,8 @@ mod simulation {
 }
 const LOGGER: NetworkLogger = NetworkLogger { log: false };
 use crate::types::{
+    ChunkedMessageCollector,
+    DeserializedMessage,
     MsgBuffer,
     NetworkLogger,
     NetworkMessage,
@@ -38,11 +40,14 @@ const RETRY_TIMEOUT: Duration = Duration::from_millis(250);
 pub struct ConnectionServer {
     socket: Arc<UdpSocket>,
     sequence_number: u8,
-    pending_acks: Arc<Mutex<HashMap<SeqNum, (Instant, SerializedNetworkMessage)>>>,
-    response_sender: mpsc::Sender<NetworkMessage>,
-    request_receiver: mpsc::Receiver<NetworkMessage>,
+    pending_acks: HashMap<SeqNum, (Instant, SerializedNetworkMessage)>,
+    server_msg_sender: mpsc::Sender<NetworkMessage>,
+    client_request_receiver: mpsc::Receiver<NetworkMessage>,
     ack_sender: mpsc::Sender<SeqNum>,
     ack_receiver: mpsc::Receiver<SeqNum>,
+    network_msg_receiver: mpsc::Receiver<NetworkMessage>,
+    network_msg_sender: mpsc::Sender<NetworkMessage>,
+    chunked_msg_collector: Arc<Mutex<ChunkedMessageCollector>>,
 }
 
 impl ConnectionServer {
@@ -60,16 +65,19 @@ impl ConnectionServer {
         let (response_sender, response_receiver) = mpsc::channel();
         let (request_sender, request_receiver) = mpsc::channel();
         let (ack_sender, ack_receiver) = mpsc::channel();
-
+        let (network_msg_sender, network_msg_receiver) = mpsc::channel();
         let connection_server = Arc::new(
             Mutex::new(ConnectionServer {
                 socket,
                 sequence_number: 0,
-                pending_acks: Arc::new(Mutex::new(HashMap::new())),
-                response_sender,
-                request_receiver,
+                pending_acks: HashMap::new(),
+                server_msg_sender: response_sender,
+                client_request_receiver: request_receiver,
                 ack_sender,
                 ack_receiver,
+                network_msg_sender,
+                network_msg_receiver,
+                chunked_msg_collector: Arc::new(Mutex::new(ChunkedMessageCollector::default())),
             })
         );
 
@@ -84,10 +92,9 @@ impl ConnectionServer {
 
     pub fn run(&mut self) {
         let receive_socket = Arc::clone(&self.socket);
-        let response_sender = self.response_sender.clone();
         let ack_sender = self.ack_sender.clone();
-        let pending_acks = Arc::clone(&self.pending_acks);
-
+        let chunk_collector = Arc::clone(&self.chunked_msg_collector);
+        let msg_sender = self.network_msg_sender.clone();
         let receive_thread = thread::spawn(move || {
             let mut buffer = MsgBuffer::default();
             loop {
@@ -95,26 +102,21 @@ impl ConnectionServer {
                 match receive_socket.recv(&mut buffer.0) {
                     Ok(amt) if amt > 0 => {
                         if let Ok(request) = buffer.parse_on_client() {
-                            if let Some(seq_num) = request.seq_num {
-                                let _ = ack_sender.send(SeqNum(seq_num));
-                            }
-                            match request.msg {
-                                NetworkMessage::ServerSentWorld(data) => {}
-                                NetworkMessage::ServerSentPlayerInputs(inputs) => {
-                                    let _ = response_sender.send(
-                                        NetworkMessage::ServerSentPlayerInputs(inputs)
-                                    );
+                            match request {
+                                crate::types::DeserializedMessageType::NonChunked(request) => {
+                                    if let Some(seq_num) = request.seq_num {
+                                        let _ = ack_sender.send(SeqNum(seq_num));
+                                    }
+                                    let _ = msg_sender.send(request.msg);
                                 }
-                                NetworkMessage::ServerSideAck(type_of_ack) => {
-                                    pending_acks.lock().unwrap().remove(&type_of_ack);
-                                    LOGGER.log_received_ack(type_of_ack.0);
+                                crate::types::DeserializedMessageType::ChunkOfMessage(chunk) => {
+                                    let _ = ack_sender.send(SeqNum(chunk.seq_num));
+                                    let mut chunk_collector = chunk_collector.lock().unwrap();
+                                    chunk_collector.collect(chunk);
+                                    if let Some(msg) = chunk_collector.try_combine() {
+                                        let _ = msg_sender.send(msg.msg);
+                                    }
                                 }
-                                NetworkMessage::ServerSentPlayerIDs(ids) => {
-                                    let _ = response_sender.send(
-                                        NetworkMessage::ServerSentPlayerIDs(ids)
-                                    );
-                                }
-                                _ => {}
                             }
                         }
                     }
@@ -131,7 +133,32 @@ impl ConnectionServer {
             if let Ok(ack) = self.ack_receiver.try_recv() {
                 self.send_ack(ack);
             }
-            match self.request_receiver.recv_timeout(Duration::from_millis(20)) {
+            if let Ok(msg) = self.network_msg_receiver.try_recv() {
+                match msg {
+                    NetworkMessage::ServerSentWorld(data) => {}
+                    NetworkMessage::ServerSentPlayerInputs(inputs) => {
+                        let _ = self.server_msg_sender.send(
+                            NetworkMessage::ServerSentPlayerInputs(inputs)
+                        );
+                    }
+                    NetworkMessage::ServerSideAck(type_of_ack) => {
+                        self.pending_acks.remove(&type_of_ack);
+                        LOGGER.log_received_ack(type_of_ack.0);
+                    }
+                    NetworkMessage::ServerSentPlayerIDs(ids) => {
+                        let _ = self.server_msg_sender.send(
+                            NetworkMessage::ServerSentPlayerIDs(ids)
+                        );
+                    }
+                    NetworkMessage::ServerRequestHostForWorldData => {
+                        let _ = self.server_msg_sender.send(
+                            NetworkMessage::ServerRequestHostForWorldData
+                        );
+                    }
+                    _ => {}
+                }
+            }
+            match self.client_request_receiver.recv_timeout(Duration::from_millis(20)) {
                 Ok(request) => {
                     match request {
                         NetworkMessage::GetOwnServerPlayerID => {
@@ -209,13 +236,10 @@ impl ConnectionServer {
                     #[cfg(feature = "simulation_mode")]
                     {
                         if rng_gen_range(0.0..100.0) < PACKET_LOSS_PERCENTAGE {
-                            self.pending_acks
-                                .lock()
-                                .unwrap()
-                                .insert(SeqNum(self.sequence_number), (
-                                    Instant::now(),
-                                    SerializedNetworkMessage { bytes: msg.clone() },
-                                ));
+                            self.pending_acks.insert(SeqNum(self.sequence_number), (
+                                Instant::now(),
+                                SerializedNetworkMessage { bytes: msg.clone() },
+                            ));
                             self.sequence_number = self.sequence_number.wrapping_add(1);
                             LOGGER.log_simulated_packet_loss(self.sequence_number);
                             continue;
@@ -223,13 +247,10 @@ impl ConnectionServer {
                     }
                     debug_assert!(msg[SEQ_NUM_BYTE_POS] == self.sequence_number);
                     self.socket.send(&msg)?;
-                    self.pending_acks
-                        .lock()
-                        .unwrap()
-                        .insert(SeqNum(self.sequence_number), (
-                            Instant::now(),
-                            SerializedNetworkMessage { bytes: msg },
-                        ));
+                    self.pending_acks.insert(SeqNum(self.sequence_number), (
+                        Instant::now(),
+                        SerializedNetworkMessage { bytes: msg },
+                    ));
                     LOGGER.log_sent_packet(self.sequence_number);
                     self.sequence_number = self.sequence_number.wrapping_add(1);
                 }
@@ -239,23 +260,20 @@ impl ConnectionServer {
                 #[cfg(feature = "simulation_mode")]
                 {
                     if rng_gen_range(0.0..100.0) < PACKET_LOSS_PERCENTAGE {
-                        self.pending_acks
-                            .lock()
-                            .unwrap()
-                            .insert(SeqNum(self.sequence_number), (
-                                Instant::now(),
-                                serialized_message.clone(),
-                            ));
+                        self.pending_acks.insert(SeqNum(self.sequence_number), (
+                            Instant::now(),
+                            serialized_message.clone(),
+                        ));
                         self.sequence_number = self.sequence_number.wrapping_add(1);
                         LOGGER.log_simulated_packet_loss(self.sequence_number);
                         return Ok(());
                     }
                 }
                 self.socket.send(&serialized_message.bytes)?;
-                self.pending_acks
-                    .lock()
-                    .unwrap()
-                    .insert(SeqNum(self.sequence_number), (Instant::now(), serialized_message));
+                self.pending_acks.insert(SeqNum(self.sequence_number), (
+                    Instant::now(),
+                    serialized_message,
+                ));
                 self.sequence_number = self.sequence_number.wrapping_add(1);
                 Ok(())
             }
@@ -276,30 +294,28 @@ impl ConnectionServer {
             }
         }
     }
-    fn handle_ack(&self, type_of_ack: SeqNum) {
+    fn handle_ack(&mut self, type_of_ack: SeqNum) {
         LOGGER.log_received_ack(type_of_ack.0);
-        let mut pending_acks = self.pending_acks.lock().unwrap();
-        pending_acks.remove(&type_of_ack);
-        LOGGER.log_pending_acks(pending_acks.keys().cloned().collect());
+        self.pending_acks.remove(&type_of_ack);
+        LOGGER.log_pending_acks(self.pending_acks.keys().cloned().collect());
     }
     fn handle_retransmissions(&mut self) {
         let now = Instant::now();
         let mut to_retry = Vec::new();
 
         {
-            let mut pending_acks = self.pending_acks.lock().unwrap();
-            for (seq, (sent_time, request)) in pending_acks.iter() {
+            for (seq, (sent_time, request)) in self.pending_acks.iter() {
                 if now.duration_since(*sent_time) > RETRY_TIMEOUT {
                     to_retry.push((*seq, request.clone()));
                 }
             }
-            pending_acks.retain(|_, (sent_time, _)| {
+            self.pending_acks.retain(|_, (sent_time, _)| {
                 now.duration_since(*sent_time) < RETRY_TIMEOUT * MAX_RETRIES
             });
         }
 
         for (seq, request) in to_retry {
-            if let Some((ref mut sent_time, _)) = self.pending_acks.lock().unwrap().get_mut(&seq) {
+            if let Some((ref mut sent_time, _)) = self.pending_acks.get_mut(&seq) {
                 *sent_time = now;
                 LOGGER.log_sent_retransmission(seq.0);
                 if let Err(e) = self.socket.send(&request.bytes) {

@@ -54,10 +54,11 @@ impl PacketParser {
         data: &[u8]
     ) -> Result<DeserializedMessage, &'static str> {
         debug_assert!(data.len() == PAYLOAD_DATA_LENGTH);
-        // HEADER IS REMOVED; ONLY DATA HERE
+        // HEADER IS REMOVED from data; ONLY DATA HERE
         let parsed_message = match header.message {
-            NetworkMessage::GetServerPlayerIDs | NetworkMessage::GetOwnServerPlayerID =>
-                header.message.clone(),
+            | NetworkMessage::GetServerPlayerIDs
+            | NetworkMessage::GetOwnServerPlayerID
+            | NetworkMessage::ServerRequestHostForWorldData => header.message.clone(),
 
             NetworkMessage::ClientSentWorld(_) => NetworkMessage::ClientSentWorld(data.to_vec()),
 
@@ -158,7 +159,7 @@ impl MsgBuffer {
         Ok(DeserializedMessageType::NonChunked(parsed_data))
     }
 
-    pub fn parse_on_client(&self) -> Result<DeserializedMessage, &'static str> {
+    pub fn parse_on_client(&self) -> Result<DeserializedMessageType, &'static str> {
         let bytes = &self.0;
 
         if bytes.is_empty() {
@@ -174,14 +175,23 @@ impl MsgBuffer {
                 NetworkMessage::ServerSideAck(_) |
                     NetworkMessage::ServerSentPlayerIDs(_) |
                     NetworkMessage::ServerSentPlayerInputs(_) |
-                    NetworkMessage::ServerSentWorld(_)
+                    NetworkMessage::ServerSentWorld(_) | NetworkMessage::ServerRequestHostForWorldData
             ),
             "Client received an invalid message type: {:?}",
             header.message
         );
-
+        if header.is_chunked {
+            return Ok(
+                DeserializedMessageType::ChunkOfMessage(ChunkOfMessage {
+                    seq_num: header.seq_num.unwrap().0,
+                    base_seq_num: header.base_chunk_seq_num,
+                    amt_of_chunks: header.amt_of_chunks,
+                    data_bytes: *bytes,
+                })
+            );
+        }
         let parsed_data = PacketParser::parse_data(&header, &bytes[DATA_BIT_START_POS..].to_vec())?;
-        Ok(parsed_data)
+        Ok(DeserializedMessageType::NonChunked(parsed_data))
     }
 }
 fn parse_player_inputs(byte: u8) -> Vec<PlayerInput> {
@@ -410,6 +420,7 @@ impl From<NetworkMessage> for u8 {
             NetworkMessage::ServerSentPlayerInputs(_) => 7,
             NetworkMessage::ServerSentWorld(_) => 8,
             NetworkMessage::ClientConnectToOtherWorld(_) => 9,
+            NetworkMessage::ServerRequestHostForWorldData => 10,
         }
     }
 }
@@ -426,6 +437,7 @@ impl From<&NetworkMessage> for u8 {
             NetworkMessage::ServerSentPlayerInputs(_) => 7,
             NetworkMessage::ServerSentWorld(_) => 8,
             NetworkMessage::ClientConnectToOtherWorld(_) => 9,
+            NetworkMessage::ServerRequestHostForWorldData => 10,
         }
     }
 }

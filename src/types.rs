@@ -92,6 +92,7 @@ pub enum NetworkMessage {
     ServerSentWorld(Vec<u8>) = 8,
 
     ClientConnectToOtherWorld(ServerPlayerID) = 9,
+    ServerRequestHostForWorldData = 10,
 }
 #[derive(Eq, Hash, PartialEq, Debug, Clone, Copy)]
 pub struct SeqNum(pub u8);
