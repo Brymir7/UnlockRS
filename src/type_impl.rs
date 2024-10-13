@@ -53,6 +53,8 @@ impl PacketParser {
         header: &MessageHeader,
         data: &[u8]
     ) -> Result<DeserializedMessage, &'static str> {
+        debug_assert!(data.len() == PAYLOAD_DATA_LENGTH);
+        // HEADER IS REMOVED; ONLY DATA HERE
         let parsed_message = match header.message {
             NetworkMessage::GetServerPlayerIDs | NetworkMessage::GetOwnServerPlayerID =>
                 header.message.clone(),
@@ -61,15 +63,15 @@ impl PacketParser {
 
             NetworkMessage::ClientSentPlayerInputs(_) => {
                 let frame = u32::from_le_bytes(data[0..4].try_into().unwrap());
-                let player_inputs = parse_player_inputs(&data[4..].to_vec());
+                let player_inputs = parse_player_inputs(data[4]);
                 NetworkMessage::ClientSentPlayerInputs(
                     NetworkedPlayerInputs::new(player_inputs, frame)
                 )
             }
             NetworkMessage::ServerSentPlayerInputs(_) => {
                 let frame = u32::from_le_bytes(data[0..4].try_into().unwrap());
-                let player_inputs = parse_player_inputs(&data[4..].to_vec());
-                NetworkMessage::ClientSentPlayerInputs(
+                let player_inputs = parse_player_inputs(data[4]);
+                NetworkMessage::ServerSentPlayerInputs(
                     NetworkedPlayerInputs::new(player_inputs, frame)
                 )
             }
@@ -182,9 +184,8 @@ impl MsgBuffer {
         Ok(parsed_data)
     }
 }
-fn parse_player_inputs(bytes: &[u8]) -> Vec<PlayerInput> {
+fn parse_player_inputs(byte: u8) -> Vec<PlayerInput> {
     let mut res = Vec::new();
-    let byte = bytes[0];
     let player_moves_left = (byte >> PLAYER_MOVE_LEFT_BYTE_POS) & 1;
     let player_moves_right: u8 = (byte >> PLAYER_MOVE_RIGHT_BYTE_POS) & 1;
     let player_shoots: u8 = (byte >> PLAYER_SHOOT_BYTE_POS) & 1;
@@ -194,7 +195,6 @@ fn parse_player_inputs(bytes: &[u8]) -> Vec<PlayerInput> {
     if player_moves_right > 0 {
         res.push(PlayerInput::Right);
     }
-    println!("player_shoots {}", player_shoots);
     if player_shoots > 0 {
         res.push(PlayerInput::Shoot);
     }
@@ -312,20 +312,27 @@ impl NetworkMessage {
                     });
                 }
             }
-            Self::ClientSentPlayerInputs(ref inp) => {
+            Self::ClientSentPlayerInputs(ref inp) | Self::ServerSentPlayerInputs(ref inp) => {
                 Self::push_non_chunked(&mut bytes);
-                bytes.push(
-                    NetworkMessage::ClientSentPlayerInputs(
-                        NetworkedPlayerInputs::placeholder()
-                    ).into()
-                );
+                let message = match *self {
+                    Self::ClientSentPlayerInputs(_) => {
+                        NetworkMessage::ClientSentPlayerInputs(NetworkedPlayerInputs::placeholder())
+                    }
+                    Self::ServerSentPlayerInputs(_) => {
+                        NetworkMessage::ServerSentPlayerInputs(NetworkedPlayerInputs::placeholder())
+                    }
+                    _ => { panic!() }
+                };
+                bytes.push(message.into());
                 let packed_inputs = Self::pack_player_inputs(&inp.inputs);
                 bytes.extend_from_slice(&inp.frame.to_le_bytes());
                 bytes.push(packed_inputs);
+
                 SerializedMessageType::from_serialized_msg(SerializedNetworkMessage {
                     bytes,
                 })
             }
+
             Self::ServerSideAck(ref seq_num) => {
                 Self::push_non_chunked(&mut bytes);
                 bytes.push(NetworkMessage::ServerSideAck(SeqNum(0)).into());

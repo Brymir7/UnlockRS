@@ -168,10 +168,11 @@ impl Server {
             NetworkMessage::ClientSentPlayerInputs(inputs) => {
                 println!("Processing player inputs from {:?}: {:?}", src, inputs);
                 if let Some(connections) = self.connections.get(src) {
-                    for conn in connections {
-                        self.send_unreliable(
+                    let addresses: Vec<_> = connections.clone();
+                    for addr in addresses {
+                        self.send_reliable(
                             NetworkMessage::ServerSentPlayerInputs(inputs.clone()),
-                            conn
+                            &addr
                         );
                     }
                 }
