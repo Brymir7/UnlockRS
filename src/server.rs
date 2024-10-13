@@ -15,6 +15,7 @@ use types::{
     SerializedMessageType,
     SerializedNetworkMessage,
     ServerPlayerID,
+    SEQ_NUM_BYTE_POS,
 };
 mod type_impl;
 mod types;
@@ -140,13 +141,14 @@ impl Server {
         self.pending_acks.insert(*addr, HashMap::new());
         self.pending_chunked_msgs.insert(*addr, ChunkedMessageCollector::default());
     }
-    pub fn create_player_player_connection(
+    pub fn create_player_conn_from_to_host(
         &mut self,
         player1_addr: SocketAddr,
         player2_addr: SocketAddr
     ) {
         self.connections.entry(player1_addr).or_insert_with(Vec::new).push(player2_addr);
         self.connections.entry(player2_addr).or_insert_with(Vec::new).push(player1_addr);
+        self.send_reliable(NetworkMessage::ServerRequestHostForWorldData, &player2_addr);
     }
 
     pub fn handle_message(&mut self, msg: DeserializedMessage, src: &SocketAddr) {
@@ -158,24 +160,24 @@ impl Server {
             self.process_message(msg.msg, src);
         }
     }
-
+    fn broadcast_reliable(&mut self, msg: NetworkMessage, src: &SocketAddr) {
+        if let Some(connections) = self.connections.get(src) {
+            let addresses: Vec<_> = connections.clone();
+            for addr in addresses {
+                self.send_reliable(msg.clone(), &addr);
+            }
+        }
+    }
     fn process_message(&mut self, msg: NetworkMessage, src: &SocketAddr) {
         match msg {
             NetworkMessage::ClientSentWorld(data) => {
-                // println!("Processing world state update from {:?}", src);
-                // println!("first 10 bytes of data {:?}", data[0..10].to_vec());
+                // RELAY WORLD
+                self.broadcast_reliable(NetworkMessage::ClientSentWorld(data), src);
             }
             NetworkMessage::ClientSentPlayerInputs(inputs) => {
+                // RELAY INPUTS
                 println!("Processing player inputs from {:?}: {:?}", src, inputs);
-                if let Some(connections) = self.connections.get(src) {
-                    let addresses: Vec<_> = connections.clone();
-                    for addr in addresses {
-                        self.send_reliable(
-                            NetworkMessage::ServerSentPlayerInputs(inputs.clone()),
-                            &addr
-                        );
-                    }
-                }
+                self.broadcast_reliable(NetworkMessage::ClientSentPlayerInputs(inputs), src);
             }
             NetworkMessage::GetServerPlayerIDs => {
                 println!("Request for player IDS");
@@ -198,8 +200,10 @@ impl Server {
                     id,
                     self.addr_to_player.get(src).unwrap()
                 );
-                let other_player_addr = self.player_to_addr[id.0 as usize].clone().expect("Corrupt player to addr"); // TODO
-                self.create_player_player_connection(*src, other_player_addr);
+                let other_player_addr = self.player_to_addr[id.0 as usize]
+                    .clone()
+                    .expect("Corrupt player to addr"); // TODO
+                self.create_player_conn_from_to_host(*src, other_player_addr);
             }
             _ => {
                 println!("Got some other message on server");
@@ -241,7 +245,20 @@ impl Server {
         let seq_num = SeqNum(self.sequence_number);
         let serialized_msg = msg.serialize(types::NetworkMessageType::Reliable(seq_num));
         match serialized_msg {
-            SerializedMessageType::Chunked(chunks) => {}
+            SerializedMessageType::Chunked(chunks) => {
+                for msg in chunks.bytes {
+                    debug_assert!(msg[SEQ_NUM_BYTE_POS] == self.sequence_number);
+                    self.socket.send(&msg);
+                    self.pending_acks
+                        .entry(*dst)
+                        .or_insert_with(HashMap::new)
+                        .insert(SeqNum(self.sequence_number), (
+                            Instant::now(),
+                            SerializedNetworkMessage { bytes: msg },
+                        ));
+                    self.sequence_number = self.sequence_number.wrapping_add(1);
+                }
+            }
             SerializedMessageType::NonChunked(serialized_msg) => {
                 self.pending_acks
                     .entry(*dst)

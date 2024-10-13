@@ -99,7 +99,11 @@ impl Simulation {
             frame: frame,
         }
     }
-    fn new_from_serialized(data: Vec<u8>, alloc: &mut PageAllocator) {}
+    fn new_from_serialized(data: Vec<u8>, alloc: &mut PageAllocator) -> Self {
+        let mut sim = Self::new(alloc);
+        alloc.set_memory(&data);
+        return sim;
+    }
 
     fn add_player(&self, alloc: &mut PageAllocator) {}
 
@@ -214,21 +218,36 @@ impl InputBuffer {
     }
 
     fn insert_networked_player_input(&mut self, inp: Vec<PlayerInput>, frame: u32, player_idx: u8) {
+        // when joining the host, the host can keep sending frames we didnt simulate yet, because while we are joining their simulation still runs
+        self.insert_frames_until(frame);
+
         for input in self.inputs.iter_mut() {
             if input.frame == frame {
                 input.insert_other_player_input(inp, player_idx);
                 return;
             }
-            debug_assert!(
-                input.frame <= frame,
-                "Inputs are out of order; couldn't find frame despite having searched linearly over all frames until frame"
-            );
         }
-        panic!("Tried to insert an input for a frame that doesn't exist on this player")
+    }
+    fn insert_frames_until(&mut self, frame: u32) {
+        while self.inputs.is_empty() || self.inputs.back().unwrap().frame < frame {
+            let next_frame = if self.inputs.is_empty() {
+                0
+            } else {
+                self.inputs.back().unwrap().frame + 1
+            };
+            self.inputs.push_back(PlayerInputs::new(vec![], next_frame));
+        }
     }
 
-    fn get_first_verified_input(&self) -> Option<&PlayerInputs> {
-        self.inputs.iter().find(|input| input.is_verified())
+    fn get_first_verified_input(&mut self) -> Option<&PlayerInputs> {
+        if let Some(verified_input) = self.inputs.iter().position(|input| input.is_verified()) {
+            // Remove the verified frame and everything before it
+            for _ in 0..=verified_input {
+                self.inputs.pop_front();
+            }
+            return self.inputs.front();
+        }
+        None
     }
 }
 #[macroquad::main("2 Player Cube Shooter")]
@@ -307,9 +326,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         break;
                     }
                 }
+
                 if chose_player {
-                    predicted_simulation = Some(Simulation::new(&mut allocator));
-                    game_state = GameState::Playing;
+                    if let Ok(NetworkMessage::ServerSentWorld(data)) = response_receiver.recv() {
+                        println!("Received world");
+                        predicted_simulation = Some(
+                            Simulation::new_from_serialized(data, &mut allocator)
+                        );
+                        game_state = GameState::Playing;
+                    }
                 }
             }
             GameState::Playing => {
@@ -328,20 +353,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
 
                     let mut player2_inputs = Vec::new();
-                    if
-                        let Ok(NetworkMessage::ServerSentPlayerInputs(inputs)) =
-                            response_receiver.recv_timeout(Duration::from_millis(1))
-                    {
-                        println!("received player inputs");
-                        println!("player inputs frame {:?}", inputs);
-                        player2_inputs = inputs.inputs;
-                        let player_idx = 1;
-                        debug_assert!(player_idx < PLAYER_COUNT);
-                        input_buffer.insert_networked_player_input(
-                            player2_inputs.clone(),
-                            inputs.frame,
-                            player_idx
-                        );
+                    if let Ok(msg) = response_receiver.recv_timeout(Duration::from_millis(1)) {
+                        match msg {
+                            NetworkMessage::ServerSentPlayerInputs(inputs) => {
+                                println!("received player inputs");
+                                println!("player inputs frame {:?}", inputs);
+                                player2_inputs = inputs.inputs;
+                                let player_idx = 1;
+                                debug_assert!(player_idx < PLAYER_COUNT);
+                                input_buffer.insert_networked_player_input(
+                                    player2_inputs.clone(),
+                                    inputs.frame,
+                                    player_idx
+                                );
+                            }
+                            NetworkMessage::ServerRequestHostForWorldData => {
+                                request_sender.send(
+                                    NetworkMessage::ClientSentWorld(allocator.get_copy_of_state())
+                                )?;
+                            }
+                            _ => {}
+                        }
                     }
 
                     if timer >= PHYSICS_FRAME_TIME {
