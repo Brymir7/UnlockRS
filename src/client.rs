@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use client_conn::ConnectionServer;
 use macroquad::{ input, prelude::* };
 use memory::{ PageAllocator, PAGE_SIZE_BYTES };
@@ -166,11 +168,8 @@ impl Simulation {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut allocator = PageAllocator::new(PAGE_SIZE_BYTES * 3, PAGE_SIZE_BYTES);
     let mut simulation: Option<Simulation> = None;
-    let (connection_server, request_sender, mut response_receiver) = ConnectionServer::new()?;
-    let runtime = tokio::runtime::Runtime::new()?;
-    runtime.spawn(async move {
-        connection_server.run().await;
-    });
+    let (connection_server, request_sender, response_receiver) = ConnectionServer::new()?;
+    ConnectionServer::start(Arc::clone(&connection_server));
 
     let mut game_state = GameState::ChooseMode;
     let mut other_player_ids: Vec<u8> = Vec::new();
@@ -195,10 +194,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             GameState::WaitingForPlayerList => {
                 draw_text("Waiting for player list...", 20.0, 40.0, 30.0, WHITE);
-                if
-                    let Some(NetworkMessage::ServerSentPlayerIDs(ids)) =
-                        response_receiver.recv().await
-                {
+                if let Ok(NetworkMessage::ServerSentPlayerIDs(ids)) = response_receiver.recv() {
                     println!("Received server player ids: {:?}", ids);
                     other_player_ids = ids;
                     game_state = GameState::ChoosePlayer;

@@ -455,7 +455,8 @@ impl ChunkedMessageCollector {
     }
     pub fn try_combine(&mut self) -> Option<DeserializedMessage> {
         for msg in &mut self.msgs {
-            msg.sort_by_key(|chunk| chunk.seq_num);
+            msg.sort_by_key(|chunk| chunk.seq_num); // 0 is after 255 due tu rounding but not respected here TODO
+
             if let Some(last_msg) = msg.last() {
                 if
                     last_msg.seq_num ==
@@ -466,6 +467,8 @@ impl ChunkedMessageCollector {
                         .iter()
                         .flat_map(|chunk| chunk.data_bytes[DATA_BIT_START_POS..].to_vec())
                         .collect();
+                    debug_assert!(msg[0].seq_num == msg[0].base_seq_num);
+                    debug_assert!(msg[0].seq_num <= last_msg.seq_num);
                     let header = PacketParser::parse_header(&msg[0].data_bytes);
                     match header {
                         Ok(header) => {
