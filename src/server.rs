@@ -23,6 +23,7 @@ const MAX_RETRIES: u32 = 20;
 const RETRY_TIMEOUT: Duration = Duration::from_millis(100);
 struct Server {
     socket: UdpSocket,
+    player_to_addr: [Option<SocketAddr>; (u8::MAX as usize) + 1],
     addr_to_player: HashMap<SocketAddr, ServerPlayerID>,
     pending_chunked_msgs: HashMap<SocketAddr, ChunkedMessageCollector>,
     connections: HashMap<SocketAddr, Vec<SocketAddr>>,
@@ -39,6 +40,7 @@ impl Server {
         Server {
             socket,
             addr_to_player,
+            player_to_addr: [None; (u8::MAX as usize) + 1],
             connections: HashMap::new(),
             pending_chunked_msgs: HashMap::new(),
             msg_buffer,
@@ -134,16 +136,17 @@ impl Server {
     pub fn create_new_connection(&mut self, addr: &SocketAddr) {
         let new_id = ServerPlayerID(self.addr_to_player.len() as u8);
         self.addr_to_player.insert(*addr, new_id);
+        self.player_to_addr[new_id.0 as usize] = Some(*addr);
         self.pending_acks.insert(*addr, HashMap::new());
         self.pending_chunked_msgs.insert(*addr, ChunkedMessageCollector::default());
     }
     pub fn create_player_player_connection(
         &mut self,
-        player1_addr: &SocketAddr,
-        player2_addr: &SocketAddr
+        player1_addr: SocketAddr,
+        player2_addr: SocketAddr
     ) {
-        self.connections.entry(*player1_addr).or_insert_with(Vec::new).push(*player2_addr);
-        self.connections.entry(*player2_addr).or_insert_with(Vec::new).push(*player1_addr);
+        self.connections.entry(player1_addr).or_insert_with(Vec::new).push(player2_addr);
+        self.connections.entry(player2_addr).or_insert_with(Vec::new).push(player1_addr);
     }
 
     pub fn handle_message(&mut self, msg: DeserializedMessage, src: &SocketAddr) {
@@ -159,8 +162,8 @@ impl Server {
     fn process_message(&mut self, msg: NetworkMessage, src: &SocketAddr) {
         match msg {
             NetworkMessage::ClientSentWorld(data) => {
-                println!("Processing world state update from {:?}", src);
-                println!("first 10 bytes of data {:?}", data[0..10].to_vec());
+                // println!("Processing world state update from {:?}", src);
+                // println!("first 10 bytes of data {:?}", data[0..10].to_vec());
             }
             NetworkMessage::ClientSentPlayerInputs(inputs) => {
                 println!("Processing player inputs from {:?}: {:?}", src, inputs);
@@ -176,18 +179,26 @@ impl Server {
             NetworkMessage::GetServerPlayerIDs => {
                 println!("Request for player IDS");
                 let player_ids: Vec<u8> = self.addr_to_player
-                    .values()
-                    .into_iter()
-                    .map(|v| v.0)
-                    .filter(|id| self.addr_to_player[src].0 != *id)
+                    .iter()
+                    .filter_map(|(addr, player)| {
+                        if *addr != *src { Some(player.0) } else { None }
+                    })
                     .collect();
+                println!("sent player ids {:?}", player_ids);
                 self.send_reliable(NetworkMessage::ServerSentPlayerIDs(player_ids), src);
             }
             NetworkMessage::ClientSideAck(seq_num) => {
                 self.handle_ack(seq_num, src);
             }
             NetworkMessage::ClientConnectToOtherWorld(id) => {
-                println!("Connecting CALLER {:?} with TARGET {:?}", id, self.addr_to_player.get(src).unwrap());
+                debug_assert!(id.0 != self.addr_to_player.get(src).unwrap().0);
+                println!(
+                    "Connecting CALLER {:?} with TARGET {:?}",
+                    id,
+                    self.addr_to_player.get(src).unwrap()
+                );
+                let other_player_addr = self.player_to_addr[id.0 as usize].clone().expect("Corrupt player to addr"); // TODO
+                self.create_player_player_connection(*src, other_player_addr);
             }
             _ => {
                 println!("Got some other message on server");

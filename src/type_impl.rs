@@ -77,10 +77,12 @@ impl PacketParser {
                 }
             }
 
-            NetworkMessage::ServerSentPlayerIDs(_) =>{
+            NetworkMessage::ServerSentPlayerIDs(_) => {
                 let amt = data[0] as usize;
                 println!("server sent player ids amt {}", amt);
-                NetworkMessage::ServerSentPlayerIDs(data[..amt].to_vec())
+                println!("{:?}", data);
+                debug_assert!(amt + 1 < data.len());
+                NetworkMessage::ServerSentPlayerIDs(data[1..amt + 1].to_vec())
             }
             NetworkMessage::ServerSentPlayerInputs(_) => {
                 let player_inputs = parse_player_inputs(&data);
@@ -125,7 +127,8 @@ impl MsgBuffer {
                     NetworkMessage::GetOwnServerPlayerID |
                     NetworkMessage::ClientSentWorld(_) |
                     NetworkMessage::ClientSentPlayerInputs(_) |
-                    NetworkMessage::ClientSideAck(_)
+                    NetworkMessage::ClientSideAck(_) |
+                    NetworkMessage::ClientConnectToOtherWorld(_)
             ),
             "Server received an invalid message type: {:?}",
             header.message

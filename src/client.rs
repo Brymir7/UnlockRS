@@ -350,7 +350,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         //     "state first 10 bytes {:?}",
                         //     allocator.get_copy_of_state()[0..100].to_vec()
                         // );
-                        println!("STATE UPDATE SENT");
+                       // println!("STATE UPDATE SENT");
                         timer_player_state_update = 0.0;
                     }
 
