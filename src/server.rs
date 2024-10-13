@@ -178,7 +178,7 @@ impl Server {
             NetworkMessage::ClientSentPlayerInputs(inputs) => {
                 // RELAY INPUTS
                 println!("Processing player inputs from {:?}: {:?}", src, inputs);
-                self.broadcast_reliable(NetworkMessage::ClientSentPlayerInputs(inputs), src);
+                self.broadcast_reliable(NetworkMessage::ServerSentPlayerInputs(inputs), src);
             }
             NetworkMessage::GetServerPlayerIDs => {
                 println!("Request for player IDS");
