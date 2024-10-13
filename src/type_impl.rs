@@ -9,6 +9,7 @@ use crate::types::{
     NetworkLogger,
     NetworkMessage,
     NetworkMessageType,
+    NetworkedPlayerInputs,
     PacketParser,
     PlayerInput,
     SeqNum,
@@ -59,8 +60,18 @@ impl PacketParser {
             NetworkMessage::ClientSentWorld(_) => NetworkMessage::ClientSentWorld(data.to_vec()),
 
             NetworkMessage::ClientSentPlayerInputs(_) => {
-                let player_inputs = parse_player_inputs(&data);
-                NetworkMessage::ClientSentPlayerInputs(player_inputs)
+                let frame = u32::from_le_bytes(data[0..4].try_into().unwrap());
+                let player_inputs = parse_player_inputs(&data[4..].to_vec());
+                NetworkMessage::ClientSentPlayerInputs(
+                    NetworkedPlayerInputs::new(player_inputs, frame)
+                )
+            }
+            NetworkMessage::ServerSentPlayerInputs(_) => {
+                let frame = u32::from_le_bytes(data[0..4].try_into().unwrap());
+                let player_inputs = parse_player_inputs(&data[4..].to_vec());
+                NetworkMessage::ClientSentPlayerInputs(
+                    NetworkedPlayerInputs::new(player_inputs, frame)
+                )
             }
             NetworkMessage::ClientConnectToOtherWorld(_) => {
                 NetworkMessage::ClientConnectToOtherWorld(ServerPlayerID(data[0]))
@@ -83,10 +94,6 @@ impl PacketParser {
                 println!("{:?}", data);
                 debug_assert!(amt + 1 < data.len());
                 NetworkMessage::ServerSentPlayerIDs(data[1..amt + 1].to_vec())
-            }
-            NetworkMessage::ServerSentPlayerInputs(_) => {
-                let player_inputs = parse_player_inputs(&data);
-                NetworkMessage::ServerSentPlayerInputs(player_inputs)
             }
 
             NetworkMessage::ServerSentWorld(_) => NetworkMessage::ServerSentWorld(data.to_vec()),
@@ -307,8 +314,13 @@ impl NetworkMessage {
             }
             Self::ClientSentPlayerInputs(ref inp) => {
                 Self::push_non_chunked(&mut bytes);
-                bytes.push(NetworkMessage::ClientSentPlayerInputs(Vec::new()).into());
-                let packed_inputs = Self::pack_player_inputs(inp);
+                bytes.push(
+                    NetworkMessage::ClientSentPlayerInputs(
+                        NetworkedPlayerInputs::placeholder()
+                    ).into()
+                );
+                let packed_inputs = Self::pack_player_inputs(&inp.inputs);
+                bytes.extend_from_slice(&inp.frame.to_le_bytes());
                 bytes.push(packed_inputs);
                 SerializedMessageType::from_serialized_msg(SerializedNetworkMessage {
                     bytes,
@@ -420,13 +432,13 @@ impl TryFrom<u8> for NetworkMessage {
             1 => Ok(NetworkMessage::GetOwnServerPlayerID),
 
             2 => Ok(NetworkMessage::ClientSentWorld(Vec::new())),
-            3 => Ok(NetworkMessage::ClientSentPlayerInputs(Vec::new())),
+            3 => Ok(NetworkMessage::ClientSentPlayerInputs(NetworkedPlayerInputs::placeholder())),
 
             4 => Ok(NetworkMessage::ServerSideAck(SeqNum(0))),
             5 => Ok(NetworkMessage::ClientSideAck(SeqNum(0))),
 
             6 => Ok(NetworkMessage::ServerSentPlayerIDs(Vec::new())),
-            7 => Ok(NetworkMessage::ServerSentPlayerInputs(Vec::new())),
+            7 => Ok(NetworkMessage::ServerSentPlayerInputs(NetworkedPlayerInputs::placeholder())),
             8 => Ok(NetworkMessage::ServerSentWorld(Vec::new())),
             9 => Ok(NetworkMessage::ClientConnectToOtherWorld(ServerPlayerID(0))),
             _ => {
@@ -524,6 +536,21 @@ impl NetworkLogger {
     pub fn log_sent_packet(&self, seq_num: u8) {
         if self.log {
             println!("Sent packet {}", seq_num);
+        }
+    }
+}
+
+impl NetworkedPlayerInputs {
+    pub fn new(inputs: Vec<PlayerInput>, frame: u32) -> Self {
+        NetworkedPlayerInputs {
+            inputs,
+            frame,
+        }
+    }
+    pub fn placeholder() -> Self {
+        NetworkedPlayerInputs {
+            inputs: Vec::new(),
+            frame: 0,
         }
     }
 }

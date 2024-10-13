@@ -21,16 +21,17 @@ mod simulation {
 }
 const LOGGER: NetworkLogger = NetworkLogger { log: false };
 use crate::types::{
-        MsgBuffer,
-        NetworkLogger,
-        NetworkMessage,
-        NetworkMessageType,
-        PlayerInput,
-        SeqNum,
-        SerializedNetworkMessage,
-        ServerPlayerID,
-        SEQ_NUM_BYTE_POS,
-    };
+    MsgBuffer,
+    NetworkLogger,
+    NetworkMessage,
+    NetworkMessageType,
+    NetworkedPlayerInputs,
+    PlayerInput,
+    SeqNum,
+    SerializedNetworkMessage,
+    ServerPlayerID,
+    SEQ_NUM_BYTE_POS,
+};
 
 const MAX_RETRIES: u32 = 8;
 const RETRY_TIMEOUT: Duration = Duration::from_millis(250);
@@ -147,7 +148,7 @@ impl ConnectionServer {
                             }
                         }
                         NetworkMessage::ClientSentPlayerInputs(inputs) => {
-                            if let Err(e) = self.send_player_inputs(&inputs) {
+                            if let Err(e) = self.send_player_inputs(inputs) {
                                 eprintln!("Error sending player inputs: {}", e);
                             }
                         }
@@ -321,11 +322,11 @@ impl ConnectionServer {
         let request = NetworkMessage::ClientConnectToOtherWorld(id);
         self.send_reliable(&request)
     }
-    fn send_player_inputs(&mut self, inputs: &[PlayerInput]) -> Result<(), std::io::Error> {
-        if inputs.len() == 0 {
+    fn send_player_inputs(&mut self, inputs: NetworkedPlayerInputs) -> Result<(), std::io::Error> {
+        if inputs.inputs.len() == 0 {
             return Ok(());
         }
-        let request = NetworkMessage::ClientSentPlayerInputs(inputs.to_vec());
+        let request = NetworkMessage::ClientSentPlayerInputs(inputs);
         self.send_unreliable(&request)
     }
 }
