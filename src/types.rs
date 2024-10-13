@@ -41,7 +41,7 @@ pub struct Simulation {
     pub player2: FixedDataPtr<Player>,
     pub amount_of_enemies: FixedDataPtr<u8>,
     pub enemies: FixedDataPtr<[Enemy; MAX_ENEMIES]>,
-    pub spawn_timer: FixedDataPtr<f64>,
+    pub frame: FixedDataPtr<u32>,
 }
 pub struct SimulationDataMut<'a> {
     pub player1: &'a mut Player,
@@ -70,6 +70,11 @@ pub enum PlayerID {
 #[derive(Debug, Copy, Clone)]
 pub struct ServerPlayerID(pub u8);
 
+#[derive(Debug, Clone)]
+pub struct NetworkedPlayerInputs {
+    pub inputs: Vec<PlayerInput>,
+    pub frame: u32,
+}
 #[repr(u8)]
 #[derive(Debug, Clone)]
 pub enum NetworkMessage {
@@ -77,13 +82,13 @@ pub enum NetworkMessage {
     GetOwnServerPlayerID = 1,
 
     ClientSentWorld(Vec<u8>) = 2,
-    ClientSentPlayerInputs(Vec<PlayerInput>) = 3,
+    ClientSentPlayerInputs(NetworkedPlayerInputs) = 3,
 
     ServerSideAck(SeqNum) = 4,
     ClientSideAck(SeqNum) = 5,
 
     ServerSentPlayerIDs(Vec<u8>) = 6,
-    ServerSentPlayerInputs(Vec<PlayerInput>) = 7,
+    ServerSentPlayerInputs(NetworkedPlayerInputs) = 7,
     ServerSentWorld(Vec<u8>) = 8,
 
     ClientConnectToOtherWorld(ServerPlayerID) = 9,

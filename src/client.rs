@@ -1,12 +1,13 @@
 use std::{ collections::VecDeque, sync::Arc, time::Duration };
 
 use client_conn::ConnectionServer;
-use macroquad::{ input, prelude::* };
+use macroquad::{ input, prelude::*, telemetry::Frame };
 use memory::{ PageAllocator, PAGE_SIZE_BYTES };
 use types::{
     Bullet,
     Enemy,
     GameState,
+    NetworkedPlayerInputs,
     Player,
     PlayerID,
     PlayerInput,
@@ -89,15 +90,13 @@ impl Simulation {
         let amount_of_enemies = alloc
             .alloc_and_write_fixed(&(0 as u8))
             .expect("Failed to alloc amount of enemies");
-        let spawn_timer_ptr = alloc
-            .alloc_and_write_fixed(&get_time())
-            .expect("Failed to alloc spawn timer");
+        let frame = alloc.alloc_and_write_fixed(&(0 as u32)).expect("Failed to alloc spawn timer");
         Self {
             player1: player_ptr,
             player2: player_ptr,
             amount_of_enemies: amount_of_enemies,
             enemies: enemies_arr_ptr,
-            spawn_timer: spawn_timer_ptr,
+            frame: frame,
         }
     }
     fn new_from_serialized(data: Vec<u8>, alloc: &mut PageAllocator) {}
@@ -113,19 +112,23 @@ impl Simulation {
     ) {
         self.handle_player_input(PlayerID::Player1, &player1_inputs, alloc);
         self.handle_player_input(PlayerID::Player2, &player2_inputs, alloc);
-
+        let enemy_amt = alloc.read_fixed(&self.amount_of_enemies);
+        let enemies = alloc.mut_read_fixed(&self.enemies);
+        for (i, enemy) in enemies.iter_mut().enumerate() {
+            if i < (enemy_amt as usize) {
+                enemy.update(dt);
+            }
+        }
+        // TODO update enemy_amt
         let player1 = alloc.mut_read_fixed(&self.player1);
-        // println!("player mov inp: {}", player1.movement_input);
-
         player1.update(dt);
         let player2 = alloc.mut_read_fixed(&self.player2);
         player2.update(dt);
-        let spawn_timer = alloc.mut_read_fixed(&self.spawn_timer);
-        if get_time() - *spawn_timer > 1.0 {
-            // add enemy
-
-            *spawn_timer = get_time();
+        let frame = alloc.mut_read_fixed(&self.frame);
+        if *frame % 60 == 0 {
+            // spawn enemy
         }
+        *frame += 1;
     }
 
     fn draw(&self, alloc: &PageAllocator) {
@@ -231,14 +234,14 @@ impl InputBuffer {
 #[macroquad::main("2 Player Cube Shooter")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut allocator = PageAllocator::new(PAGE_SIZE_BYTES * 4, PAGE_SIZE_BYTES);
-    let mut simulation: Option<Simulation> = None;
+    let mut predicted_simulation: Option<Simulation> = None;
+    let mut verified_simulation: Option<Simulation> = None;
     let (connection_server, request_sender, response_receiver) = ConnectionServer::new()?;
     ConnectionServer::start(Arc::clone(&connection_server));
 
     let mut game_state = GameState::ChooseMode;
     let mut other_player_ids: Vec<u8> = Vec::new();
     let mut timer = 0.0;
-    let mut timer_player_state_update = 0.0;
     let mut input_buffer = InputBuffer::new();
     loop {
         clear_background(BLACK);
@@ -250,7 +253,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 draw_text("Press 'J' to Join", 20.0, 110.0, 20.0, WHITE);
 
                 if is_key_pressed(KeyCode::H) {
-                    simulation = Some(Simulation::new(&mut allocator));
+                    predicted_simulation = Some(Simulation::new(&mut allocator));
                     game_state = GameState::Playing;
                 } else if is_key_pressed(KeyCode::J) {
                     request_sender.send(NetworkMessage::GetServerPlayerIDs)?;
@@ -305,12 +308,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
                 if chose_player {
-                    simulation = Some(Simulation::new(&mut allocator));
+                    predicted_simulation = Some(Simulation::new(&mut allocator));
                     game_state = GameState::Playing;
                 }
             }
             GameState::Playing => {
-                if let Some(ref mut sim) = simulation {
+                if let Some(ref mut predicted_sim) = predicted_simulation {
                     let dt = get_frame_time();
                     timer += dt;
                     let mut player1_inputs = Vec::new();
@@ -330,31 +333,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             response_receiver.recv_timeout(Duration::from_millis(1))
                     {
                         println!("received player inputs");
-                        player2_inputs = inputs;
+                        player2_inputs = inputs.inputs;
+                        let player_idx = 1;
+                        debug_assert!(player_idx < PLAYER_COUNT);
+                        input_buffer.insert_networked_player_input(
+                            player2_inputs.clone(),
+                            inputs.frame,
+                            player_idx
+                        );
                     }
 
-                    if timer > PHYSICS_FRAME_TIME {
+                    if timer >= PHYSICS_FRAME_TIME {
+                        timer -= PHYSICS_FRAME_TIME;
                         input_buffer.insert_curr_player(player1_inputs.clone());
-                        timer_player_state_update += timer;
-                        timer = 0.0;
-                        sim.update(dt, &player1_inputs, &player2_inputs, &mut allocator);
+                        predicted_sim.update(dt, &player1_inputs, &player2_inputs, &mut allocator);
                         request_sender.send(
-                            NetworkMessage::ClientSentPlayerInputs(player1_inputs.clone())
+                            NetworkMessage::ClientSentPlayerInputs(
+                                NetworkedPlayerInputs::new(
+                                    player1_inputs.clone(),
+                                    allocator.read_fixed(&predicted_sim.frame)
+                                )
+                            )
                         )?;
                     }
-                    if timer_player_state_update > SENT_PLAYER_STATE_TIME {
-                        request_sender.send(
-                            NetworkMessage::ClientSentWorld(allocator.get_copy_of_state())
-                        )?;
-                        // println!(
-                        //     "state first 10 bytes {:?}",
-                        //     allocator.get_copy_of_state()[0..100].to_vec()
-                        // );
-                       // println!("STATE UPDATE SENT");
-                        timer_player_state_update = 0.0;
-                    }
-
-                    sim.draw(&allocator);
+                    predicted_sim.draw(&allocator);
                 }
             }
         }
