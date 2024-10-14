@@ -13,10 +13,11 @@
 
 # mandatory todo 
 
+
 - bullets
 - implement sending inputs in buffer instead of individual packets in network layer
 - implement SYNC check | by world state CRC / checksum
-
+- error correction for smoothing out visual
 
 
 todo! _> dynamic max packet length
