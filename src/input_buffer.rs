@@ -19,9 +19,9 @@ impl PlayerInputs {
     }
 
     fn insert_player_input(&mut self, input: Vec<PlayerInput>, player_id: PlayerID) {
-        println!("input before {:?}", self.inputs);
+        // println!("input before {:?}", self.inputs);
         self.inputs[player_id as usize] = Some(input);
-        println!("input before {:?}", self.inputs);
+        // println!("input before {:?}", self.inputs);
     }
 
     pub fn is_verified(&self, player_count: u8) -> bool {
@@ -66,14 +66,17 @@ impl InputBuffer {
         self.player_count = player_cnt;
     }
     pub fn insert_curr_player_inp(&mut self, inp: Vec<PlayerInput>, frame: u32) {
+        if frame < self.curr_verified_frame {
+            return;
+        }
         debug_assert!(frame != 0); // no input can happen before its first drawn
         // frame 0 doesnt exist in arra
-        println!(
-            "inserted curr player {:?} input at frame {}, input {:?}",
-            self.local_player,
-            frame,
-            inp
-        );
+        // println!(
+        //     "inserted curr player {:?} input at frame {}, input {:?}",
+        //     self.local_player,
+        //     frame,
+        //     inp
+        // );
         while self.input_frames.back().map_or(0, |pi| pi.frame) < frame {
             let next_frame = self.input_frames.back().map_or(frame, |pi| pi.frame + 1);
             let new_inp = PlayerInputs::new(next_frame);
@@ -107,12 +110,15 @@ impl InputBuffer {
                 .zip(self.input_frames.iter().skip(1))
                 .all(|(a, b)| a.frame <= b.frame)
         );
-        println!(
-            "state after inserting curr player now {:?}",
-            self.input_frames.iter().find(|f| f.frame == frame)
-        );
+        // println!(
+        //     "state after inserting curr player now {:?}",
+        //     self.input_frames.iter().find(|f| f.frame == frame)
+        // );
     }
     pub fn insert_other_player_inp(&mut self, inp: Vec<PlayerInput>, frame: u32) {
+        if frame < self.curr_verified_frame {
+            return;
+        }
         debug_assert!(frame != 0); // no input can happen before its first drawn
         // debug_assert!(other != self.local_player);
         // frame 0 doesnt exist in arra
@@ -121,12 +127,12 @@ impl InputBuffer {
         } else {
             PlayerID::Player1
         };
-        println!(
-            "inserted other player {:?} input at frame {}, input {:?}",
-            other_player_id,
-            frame,
-            inp
-        );
+        // println!(
+        //     "inserted other player {:?} input at frame {}, input {:?}",
+        //     other_player_id,
+        //     frame,
+        //     inp
+        // );
         while self.input_frames.back().map_or(0, |pi| pi.frame) < frame {
             let next_frame = self.input_frames.back().map_or(frame, |pi| pi.frame + 1);
             let inp = PlayerInputs::new(next_frame);
@@ -149,13 +155,14 @@ impl InputBuffer {
                 .zip(self.input_frames.iter().skip(1))
                 .all(|(a, b)| a.frame <= b.frame)
         );
-        println!(
-            "state after inserting other now {:?}",
-            self.input_frames.iter().find(|f| f.frame == frame)
-        );
+        // println!(
+        //     "state after inserting other now {:?}",
+        //     self.input_frames.iter().find(|f| f.frame == frame)
+        // );
     }
     pub fn pop_next_verified_frame(&mut self) -> Option<PlayerInputs> {
         if let Some(front) = self.input_frames.front() {
+
             if front.is_verified(self.player_count) {
                 let res = self.input_frames.pop_front().unwrap();
                 self.last_verified_inputs = res.inputs.clone();

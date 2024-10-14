@@ -385,9 +385,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             match msg {
                                 NetworkMessage::ServerSentPlayerInputs(inputs) => {
                                     //println!("other player inputs frame {:?}", inputs);
+                                    // if
+                                    //     let Some(pkt) = input_buffer.input_frames
+                                    //         .iter()
+                                    //         .find(|f| f.frame == input_buffer.input_frames[0].frame)
+                                    // {
+                                    //     println!("server sent input packet  {:?}", inputs.clone());
+                                    // }
                                     let player2_inputs = inputs.inputs;
                                     let player_idx = 1;
                                     debug_assert!(player_idx < MAX_PLAYER_COUNT);
+                                    // println!(
+                                    //     "input buffer at 0 {:?}",
+                                    //     input_buffer.input_frames[0]
+                                    // );
+
                                     input_buffer.insert_other_player_inp(
                                         player2_inputs.clone(),
                                         inputs.frame
@@ -395,12 +407,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }
                                 NetworkMessage::ServerRequestHostForWorldData => {
                                     // this also means that we are connecting with someone and its now a mulitplayer lobby
-                                    println!("Sending state to server");
                                     request_sender.send(
                                         NetworkMessage::ClientSentWorld(
                                             verif_allocator.get_copy_of_state()
                                         )
                                     )?;
+                                    request_sender.send(
+                                        NetworkMessage::ClientSentPlayerInputs(
+                                            NetworkedPlayerInputs::new(
+                                                player1_inputs.clone(),
+                                                pred_allocator.read_fixed(
+                                                    &predicted_simulation.frame
+                                                ) + 1
+                                            )
+                                        )
+                                    )?;
+                                    // println!(
+                                    //     "Host sent frame num {}",
+                                    //     pred_allocator.read_fixed(&predicted_simulation.frame) + 1
+                                    // );
                                     if session_player_count == 1 {
                                         // TODO and player id is not the same as other player
                                         session_player_count += 1;
@@ -414,9 +439,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
                         let mut new_verified_state = false;
-                        // println!("input buffer at 0 {:?}", input_buffer.input_frames[0]);
+
                         while let Some(verif_frame_input) = input_buffer.pop_next_verified_frame() {
-                            println!("verif sim");
+                            // println!("verif sim");
                             debug_assert!(
                                 verif_allocator.read_fixed(&verified_simulation.frame) + 1 ==
                                     verif_frame_input.frame,
@@ -434,7 +459,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             );
                             new_verified_state = true;
                         }
-                        if new_verified_state {
+                        if new_verified_state && session_player_count > 0 {
                             pred_allocator.set_memory(&verif_allocator.get_copy_of_state());
                         }
 
@@ -476,6 +501,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         local_player_id,
                         session_player_count > 1, // TODO
                         &pred_allocator
+                    );
+                    draw_text(
+                        &format!(
+                            "Current verified Frame: {}, pred frame {} ",
+                            verif_allocator.read_fixed(&verified_simulation.frame),
+                            pred_allocator.read_fixed(&predicted_simulation.frame)
+                        ),
+                        25.0,
+                        25.0,
+                        20.0,
+                        WHITE
                     );
                 }
             }
