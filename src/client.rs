@@ -283,21 +283,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
 
                 if chose_player {
-                    if let Ok(msg) = response_receiver.recv_timeout(Duration::from_millis(1)) {
-                        match msg {
-                            NetworkMessage::ServerSentPlayerInputs(inputs) => {
-                                //println!("other player inputs frame {:?}", inputs);
-                                let player2_inputs = inputs.inputs;
-                                let player_idx = 1;
-                                debug_assert!(player_idx < MAX_PLAYER_COUNT);
-                                input_buffer.insert_other_player_inp(
-                                    player2_inputs.clone(),
-                                    inputs.frame
-                                );
-                            }
-                            _ => {}
-                        }
-                    }
                     if
                         let Ok(NetworkMessage::ServerSentWorld(data)) =
                             response_receiver.recv_timeout(Duration::from_millis(20))
@@ -315,10 +300,53 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         debug_assert!(
                             verif_allocator.read_fixed(&verified_simulation.unwrap().frame) > 0
                         );
-                        session_player_count += 1;
-                        local_player_id = PlayerID::Player2;
-                        input_buffer.update_player_count(local_player_id, session_player_count);
-                        game_state = GameState::Playing;
+
+                        if let Ok(msg) = response_receiver.recv_timeout(Duration::from_millis(1)) {
+                            match msg {
+                                NetworkMessage::ServerSentPlayerInputs(inputs) => {
+                                    //println!("other player inputs frame {:?}", inputs);
+                                    let player2_inputs = inputs.inputs;
+                                    let player_idx = 1;
+                                    debug_assert!(player_idx < MAX_PLAYER_COUNT);
+                                    input_buffer.insert_curr_player_inp(
+                                        player2_inputs.clone(),
+                                        inputs.frame
+                                    );
+                                }
+                                _ => {}
+                            }
+                        }
+                        if let Some(verified_simulation) = verified_simulation {
+                            println!("playing catchup with the new inputs");
+                            while
+                                let Some(verif_frame_input) = input_buffer.pop_next_verified_frame()
+                            {
+                                println!("verif sim catchup");
+                                debug_assert!(
+                                    verif_allocator.read_fixed(&verified_simulation.frame) + 1 ==
+                                        verif_frame_input.frame,
+                                    "verif frame inp {:?}",
+                                    verif_frame_input
+                                );
+                                verified_simulation.update(
+                                    PHYSICS_FRAME_TIME,
+                                    verif_frame_input.inputs.clone(),
+                                    &mut verif_allocator
+                                );
+                                debug_assert!(
+                                    verif_allocator.read_fixed(&verified_simulation.frame) ==
+                                        verif_frame_input.frame
+                                );
+                            }
+                            session_player_count += 1;
+                            local_player_id = PlayerID::Player2;
+                            game_state = GameState::Playing;
+                            input_buffer.update_player_count(
+                                verif_allocator.read_fixed(&verified_simulation.frame),
+                                local_player_id,
+                                session_player_count
+                            );
+                        }
                     }
                 }
             }
@@ -379,6 +407,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         // TODO and player id is not the same as other player
                                         session_player_count += 1;
                                         input_buffer.update_player_count(
+                                            verif_allocator.read_fixed(&verified_simulation.frame),
                                             local_player_id,
                                             session_player_count
                                         );
@@ -388,6 +417,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
                         let mut new_verified_state = false;
+                        println!("input buffer at 0 {:?}", input_buffer.inputs[0]);
                         while let Some(verif_frame_input) = input_buffer.pop_next_verified_frame() {
                             println!("verif sim");
                             debug_assert!(
@@ -397,7 +427,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 verif_frame_input
                             );
                             verified_simulation.update(
-                                dt,
+                                PHYSICS_FRAME_TIME,
                                 verif_frame_input.inputs.clone(),
                                 &mut verif_allocator
                             );
@@ -426,7 +456,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     pred_frame_input.frame
                                 );
                                 predicted_simulation.update(
-                                    dt,
+                                    PHYSICS_FRAME_TIME,
                                     pred_frame_input.inputs.clone(),
                                     &mut pred_allocator
                                 );
