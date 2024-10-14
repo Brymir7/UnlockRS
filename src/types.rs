@@ -62,7 +62,7 @@ pub enum PlayerInput {
     Right,
     Shoot,
 }
-#[derive(PartialEq, Copy, Clone)]
+#[derive(PartialEq, Copy, Clone, Debug)]
 pub enum PlayerID {
     Player1,
     Player2,

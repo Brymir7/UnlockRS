@@ -1,6 +1,7 @@
 use std::{ collections::VecDeque, sync::Arc, time::Duration };
 
 use client_conn::ConnectionServer;
+use input_buffer::InputBuffer;
 use macroquad::{ input, prelude::*, telemetry::Frame };
 use memory::{ PageAllocator, PAGE_SIZE_BYTES };
 use types::{
@@ -21,6 +22,7 @@ const PHYSICS_FRAME_TIME: f32 = 1.0 / 60.0;
 const SENT_PLAYER_STATE_TIME: f32 = 5.0;
 mod types;
 mod type_impl;
+mod input_buffer;
 mod client_conn;
 mod memory;
 impl Player {
@@ -113,24 +115,20 @@ impl Simulation {
     fn update(
         &self,
         dt: f32,
-        local_player_id: PlayerID,
-        player1_inputs: &Vec<PlayerInput>,
-        player2_inputs: &Vec<PlayerInput>,
+        player_inputs: [Option<Vec<PlayerInput>>; MAX_PLAYER_COUNT as usize],
         alloc: &mut PageAllocator
     ) {
-        let controllable_player = if local_player_id == PlayerID::Player1 {
-            PlayerID::Player1
-        } else {
-            PlayerID::Player2
-        };
-        let other_player = if local_player_id == PlayerID::Player1 {
-            PlayerID::Player2
-        } else {
-            PlayerID::Player1
-        };
-        self.handle_player_input(controllable_player, &player1_inputs, alloc);
-        self.handle_player_input(other_player, &player2_inputs, alloc);
-
+        for (player_id, inputs) in player_inputs.iter().enumerate() {
+            if let Some(inputs) = inputs {
+                println!(
+                    "Handling player input for {:?} {:?}",
+                    inputs,
+                    PlayerID::from_usize(player_id)
+                );
+                let player_id = PlayerID::from_usize(player_id).unwrap();
+                self.handle_player_input(player_id, inputs, alloc);
+            }
+        }
         let enemy_amt = alloc.read_fixed(&self.amount_of_enemies);
         let enemies = alloc.mut_read_fixed(&self.enemies);
         for (i, enemy) in enemies.iter_mut().enumerate() {
@@ -200,90 +198,8 @@ impl Simulation {
         }
     }
 }
-pub const PLAYER_COUNT: u8 = 2;
-#[derive(Debug)]
-struct PlayerInputs {
-    inputs: [Option<Vec<PlayerInput>>; PLAYER_COUNT as usize],
-    frame: u32,
-}
-impl PlayerInputs {
-    fn new(curr_player_input: Vec<PlayerInput>, frame: u32) -> Self {
-        PlayerInputs {
-            inputs: [Some(curr_player_input), None],
-            frame,
-        }
-    }
-    fn insert_other_player_input(&mut self, other: Vec<PlayerInput>, player_id: PlayerID) {
-        self.inputs[player_id as usize] = Some(other);
-    }
-    fn is_verified(&self) -> bool {
-        return self.inputs.iter().all(|key| key.is_some());
-    }
-}
-#[derive(Debug)]
-struct InputBuffer {
-    inputs: VecDeque<PlayerInputs>,
-}
+pub const MAX_PLAYER_COUNT: u8 = 2;
 
-impl InputBuffer {
-    fn new() -> Self {
-        InputBuffer {
-            inputs: VecDeque::new(),
-        }
-    }
-
-    fn insert_curr_player(&mut self, inp: Vec<PlayerInput>) {
-        if self.inputs.is_empty() {
-            self.inputs.push_back(PlayerInputs::new(inp, 0));
-        } else {
-            self.inputs.push_back(PlayerInputs::new(inp, self.inputs.back().unwrap().frame + 1));
-        }
-    }
-
-    fn insert_networked_player_input(
-        &mut self,
-        inp: Vec<PlayerInput>,
-        frame: u32,
-        player_id: PlayerID
-    ) {
-        // when joining the host, the host can keep sending frames we didnt simulate yet, because while we are joining their simulation still runs
-        self.insert_frames_until(frame);
-
-        for input in self.inputs.iter_mut() {
-            if input.frame == frame {
-                input.insert_other_player_input(inp, player_id);
-                return;
-            }
-        }
-    }
-    fn insert_frames_until(&mut self, frame: u32) {
-        while self.inputs.is_empty() || self.inputs.back().unwrap().frame < frame {
-            let next_frame = if self.inputs.is_empty() {
-                0
-            } else {
-                self.inputs.back().unwrap().frame + 1
-            };
-            self.inputs.push_back(PlayerInputs::new(vec![], next_frame));
-        }
-    }
-
-    fn get_first_verified_input(&mut self) -> Option<&PlayerInputs> {
-        if let Some(verified_input) = self.inputs.iter().position(|input| input.is_verified()) {
-            // Remove the verified frame and everything before it
-            for _ in 0..verified_input {
-                self.inputs.pop_front();
-            }
-            return self.inputs.front();
-        }
-        None
-    }
-    fn get_predicted_inputs_for_frame(&self) -> PlayerInputs {
-        let last_inp = self.inputs.back();
-        if let Some(last_inp) = last_inp {
-        }
-        todo!()
-    }
-}
 #[macroquad::main("2 Player Cube Shooter")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut pred_allocator = PageAllocator::new(PAGE_SIZE_BYTES * 5, PAGE_SIZE_BYTES);
@@ -294,7 +210,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let (connection_server, request_sender, response_receiver) = ConnectionServer::new()?;
     ConnectionServer::start(Arc::clone(&connection_server));
-    let mut other_player_connected = false;
     let mut local_player_id = PlayerID::Player1;
 
     let mut chose_player = false;
@@ -302,6 +217,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut other_player_ids: Vec<u8> = Vec::new();
     let mut timer = 0.0;
     let mut input_buffer = InputBuffer::new();
+    let mut session_player_count = 1;
     loop {
         clear_background(BLACK);
 
@@ -406,61 +322,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     if is_key_pressed(KeyCode::W) {
                         player1_inputs.push(PlayerInput::Shoot);
                     }
-
-                    let mut player2_inputs = Vec::new();
-
-                    if let Some(inp) = input_buffer.get_first_verified_input() {
-                        verified_simulation.update(
-                            dt,
-                            local_player_id,
-                            inp.inputs[0].as_ref().unwrap(),
-                            inp.inputs[1].as_ref().unwrap(),
-                            &mut verif_allocator
-                        );
-                        //debug_assert!(
-                        //    verif_allocator.read_fixed(&verified_simulation.frame) == inp.frame
-                        //);
-                        pred_allocator.set_memory(&verif_allocator.get_copy_of_state());
-                    }
-
-                    if let Ok(msg) = response_receiver.recv_timeout(Duration::from_millis(1)) {
-                        match msg {
-                            NetworkMessage::ServerSentPlayerInputs(inputs) => {
-                                println!("received player inputs");
-                                println!("player inputs frame {:?}", inputs);
-                                player2_inputs = inputs.inputs;
-                                let player_idx = 1;
-                                debug_assert!(player_idx < PLAYER_COUNT);
-                                input_buffer.insert_networked_player_input(
-                                    player2_inputs.clone(),
-                                    inputs.frame,
-                                    PlayerID::Player2
-                                );
-                            }
-                            NetworkMessage::ServerRequestHostForWorldData => {
-                                // this also means that we are connecting with someone and its now a mulitplayer lobby
-                                println!("Sending state to server");
-                                request_sender.send(
-                                    NetworkMessage::ClientSentWorld(
-                                        verif_allocator.get_copy_of_state()
-                                    )
-                                )?;
-                                other_player_connected = true;
-                            }
-                            _ => {}
-                        }
-                    }
-
                     if timer >= PHYSICS_FRAME_TIME {
                         timer -= PHYSICS_FRAME_TIME;
-                        input_buffer.insert_curr_player(player1_inputs.clone());
-                        predicted_simulation.update(
-                            dt,
-                            local_player_id,
-                            &player1_inputs,
-                            &player2_inputs,
-                            &mut pred_allocator
-                        );
                         request_sender.send(
                             NetworkMessage::ClientSentPlayerInputs(
                                 NetworkedPlayerInputs::new(
@@ -469,10 +332,80 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 )
                             )
                         )?;
+                        input_buffer.insert_player_input(
+                            player1_inputs.clone(),
+                            pred_allocator.read_fixed(&predicted_simulation.frame),
+                            local_player_id as usize
+                        );
+                        if let Ok(msg) = response_receiver.recv_timeout(Duration::from_millis(1)) {
+                            match msg {
+                                NetworkMessage::ServerSentPlayerInputs(inputs) => {
+                                    println!("other player inputs frame {:?}", inputs);
+                                    let player2_inputs = inputs.inputs;
+                                    let player_idx = 1;
+                                    debug_assert!(player_idx < MAX_PLAYER_COUNT);
+                                    input_buffer.insert_player_input(
+                                        player2_inputs.clone(),
+                                        inputs.frame,
+                                        PlayerID::Player2 as usize
+                                    );
+                                }
+                                NetworkMessage::ServerRequestHostForWorldData => {
+                                    // this also means that we are connecting with someone and its now a mulitplayer lobby
+                                    println!("Sending state to server");
+                                    request_sender.send(
+                                        NetworkMessage::ClientSentWorld(
+                                            verif_allocator.get_copy_of_state()
+                                        )
+                                    )?;
+                                    session_player_count += 1;
+                                }
+                                _ => {}
+                            }
+                        }
+                        if let Some(verif_frame_input) = input_buffer.get_first_verified_input() {
+                            debug_assert!(
+                                verif_allocator.read_fixed(&verified_simulation.frame) ==
+                                    verif_frame_input.frame
+                            );
+                            verified_simulation.update(
+                                dt,
+                                verif_frame_input.inputs.clone(),
+                                &mut verif_allocator
+                            );
+                            debug_assert!(
+                                verif_allocator.read_fixed(&verified_simulation.frame) + 1 ==
+                                    verif_frame_input.frame
+                            );
+                            pred_allocator.set_memory(&verif_allocator.get_copy_of_state());
+                        }
+                        for (_, pred_frame_input) in input_buffer.iter_from_last_verified() {
+                            if
+                                pred_allocator.read_fixed(&predicted_simulation.frame) <=
+                                pred_frame_input.frame
+                            {
+                                //debug_assert!(
+                                //    pred_allocator.read_fixed(&predicted_simulation.frame) + 1 ==
+                                //        pred_frame_input.frame,
+                                //    "sim frame {} vs pred frame {}",
+                                //    pred_allocator.read_fixed(&predicted_simulation.frame),
+                                //    pred_frame_input.frame
+                                //);
+                                predicted_simulation.update(
+                                    dt,
+                                    pred_frame_input.inputs.clone(),
+                                    &mut pred_allocator
+                                );
+                                //debug_assert!(
+                                //    pred_allocator.read_fixed(&predicted_simulation.frame) + 1 ==
+                                //        pred_frame_input.frame
+                                //);
+                            }
+                        }
                     }
                     predicted_simulation.draw(
                         local_player_id,
-                        other_player_connected,
+                        session_player_count > 1, // TODO
                         &pred_allocator
                     );
                 }

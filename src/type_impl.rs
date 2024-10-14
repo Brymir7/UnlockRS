@@ -11,6 +11,7 @@ use crate::types::{
     NetworkMessageType,
     NetworkedPlayerInputs,
     PacketParser,
+    PlayerID,
     PlayerInput,
     SeqNum,
     SerializedMessageType,
@@ -576,6 +577,16 @@ impl NetworkedPlayerInputs {
         NetworkedPlayerInputs {
             inputs: Vec::new(),
             frame: 0,
+        }
+    }
+}
+
+impl PlayerID {
+    pub fn from_usize(u: usize) -> Option<PlayerID> {
+        match u {
+            0 => Some(PlayerID::Player1),
+            1 => Some(PlayerID::Player2),
+            _ => None,
         }
     }
 }
