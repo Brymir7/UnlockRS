@@ -20,8 +20,8 @@ use types::{
 mod type_impl;
 mod types;
 mod memory;
-const MAX_RETRIES: u32 = 20;
-const RETRY_TIMEOUT: Duration = Duration::from_millis(100);
+const MAX_RETRIES: u32 = 1;
+const RETRY_TIMEOUT: Duration = Duration::from_millis(250);
 struct Server {
     socket: UdpSocket,
     player_to_addr: [Option<SocketAddr>; (u8::MAX as usize) + 1],
@@ -128,8 +128,12 @@ impl Server {
         }
 
         self.pending_acks.retain(|_, pending_messages| {
-            pending_messages.retain(|_, (sent_time, _)| {
-                now.duration_since(*sent_time) < RETRY_TIMEOUT * MAX_RETRIES
+            pending_messages.retain(|seq, (sent_time, _)| {
+                let resend = now.duration_since(*sent_time) < RETRY_TIMEOUT * MAX_RETRIES;
+                if !resend {
+                    println!("lost connection with {:?}", seq);
+                }
+                return resend;
             });
             !pending_messages.is_empty()
         });
@@ -197,9 +201,9 @@ impl Server {
             NetworkMessage::ClientConnectToOtherWorld(id) => {
                 debug_assert!(id.0 != self.addr_to_player.get(src).unwrap().0);
                 // println!(
-                    // "Connecting CALLER {:?} with TARGET {:?}",
-                    // id,
-                    // self.addr_to_player.get(src).unwrap()
+                // "Connecting CALLER {:?} with TARGET {:?}",
+                // id,
+                // self.addr_to_player.get(src).unwrap()
                 // );
                 let other_player_addr = self.player_to_addr[id.0 as usize]
                     .clone()
