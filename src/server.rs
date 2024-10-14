@@ -153,7 +153,7 @@ impl Server {
 
     pub fn handle_message(&mut self, msg: DeserializedMessage, src: &SocketAddr) {
         if let Some(seq_num) = msg.seq_num {
-            println!("msg arrived with seq num {}", seq_num);
+            // println!("msg arrived with seq num {}", seq_num);
             self.process_message(msg.msg, src);
             self.send_ack(SeqNum(seq_num), src);
         } else {
@@ -177,18 +177,18 @@ impl Server {
             }
             NetworkMessage::ClientSentPlayerInputs(inputs) => {
                 // RELAY INPUTS
-                println!("Processing player inputs from {:?}: {:?}", src, inputs);
+                // println!("Processing player inputs from {:?}: {:?}", src, inputs);
                 self.broadcast_reliable(NetworkMessage::ServerSentPlayerInputs(inputs), src);
             }
             NetworkMessage::GetServerPlayerIDs => {
-                println!("Request for player IDS");
+                // println!("Request for player IDS");
                 let player_ids: Vec<u8> = self.addr_to_player
                     .iter()
                     .filter_map(|(addr, player)| {
                         if *addr != *src { Some(player.0) } else { None }
                     })
                     .collect();
-                println!("sent player ids {:?}", player_ids);
+                // println!("sent player ids {:?}", player_ids);
                 self.send_reliable(NetworkMessage::ServerSentPlayerIDs(player_ids), src);
             }
             NetworkMessage::ClientSideAck(seq_num) => {
@@ -196,11 +196,11 @@ impl Server {
             }
             NetworkMessage::ClientConnectToOtherWorld(id) => {
                 debug_assert!(id.0 != self.addr_to_player.get(src).unwrap().0);
-                println!(
-                    "Connecting CALLER {:?} with TARGET {:?}",
-                    id,
-                    self.addr_to_player.get(src).unwrap()
-                );
+                // println!(
+                    // "Connecting CALLER {:?} with TARGET {:?}",
+                    // id,
+                    // self.addr_to_player.get(src).unwrap()
+                // );
                 let other_player_addr = self.player_to_addr[id.0 as usize]
                     .clone()
                     .expect("Corrupt player to addr"); // TODO
@@ -215,7 +215,7 @@ impl Server {
     pub fn handle_ack(&mut self, seq_num: SeqNum, src: &SocketAddr) {
         if let Some(pending_messages) = self.pending_acks.get_mut(src) {
             if pending_messages.remove(&seq_num).is_some() {
-                println!("Acknowledged message {:?} from client {:?}", seq_num, src);
+                // println!("Acknowledged message {:?} from client {:?}", seq_num, src);
             } else {
                 println!(
                     "Received acknowledgment for unknown message {:?} from client {:?}",
