@@ -19,6 +19,8 @@
 - implement SYNC check | by world state CRC / checksum
 - error correction for smoothing out visual
 
+- cleaner client.rs (better abstraction network vs client, shorter main function, easier multiplayer enabling / disabling) 
+
 
 todo! _> dynamic max packet length
 todo! _> dynamic connections, reconnections / resync when CRC invalid
