@@ -1,4 +1,4 @@
-use std::{ collections::VecDeque, sync::Arc, time::Duration };
+use std::{ collections::VecDeque, sync::Arc, thread::sleep, time::Duration };
 
 use client_conn::ConnectionServer;
 use input_buffer::InputBuffer;
@@ -120,11 +120,6 @@ impl Simulation {
     ) {
         for (player_id, inputs) in player_inputs.iter().enumerate() {
             if let Some(inputs) = inputs {
-                println!(
-                    "Handling player input for {:?} {:?}",
-                    inputs,
-                    PlayerID::from_usize(player_id)
-                );
                 let player_id = PlayerID::from_usize(player_id).unwrap();
                 self.handle_player_input(player_id, inputs, alloc);
             }
@@ -234,7 +229,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 } else if is_key_pressed(KeyCode::J) {
                     request_sender.send(NetworkMessage::GetServerPlayerIDs)?;
                     game_state = GameState::WaitingForPlayerList;
-                    local_player_id = PlayerID::Player2;
                 }
             }
             GameState::WaitingForPlayerList => {
@@ -289,6 +283,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
 
                 if chose_player {
+                    if let Ok(msg) = response_receiver.recv_timeout(Duration::from_millis(1)) {
+                        match msg {
+                            NetworkMessage::ServerSentPlayerInputs(inputs) => {
+                                //println!("other player inputs frame {:?}", inputs);
+                                let player2_inputs = inputs.inputs;
+                                let player_idx = 1;
+                                debug_assert!(player_idx < MAX_PLAYER_COUNT);
+                                input_buffer.insert_other_player_inp(
+                                    player2_inputs.clone(),
+                                    inputs.frame
+                                );
+                            }
+                            _ => {}
+                        }
+                    }
                     if
                         let Ok(NetworkMessage::ServerSentWorld(data)) =
                             response_receiver.recv_timeout(Duration::from_millis(20))
@@ -299,6 +308,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         predicted_simulation = Some(
                             Simulation::new_from_serialized(data, &mut pred_allocator)
                         );
+                        debug_assert!(
+                            verif_allocator.read_fixed(&verified_simulation.unwrap().frame) ==
+                                pred_allocator.read_fixed(&predicted_simulation.unwrap().frame)
+                        );
+                        debug_assert!(
+                            verif_allocator.read_fixed(&verified_simulation.unwrap().frame) > 0
+                        );
+                        session_player_count += 1;
+                        local_player_id = PlayerID::Player2;
+                        input_buffer.update_player_count(local_player_id, session_player_count);
                         game_state = GameState::Playing;
                     }
                 }
@@ -328,26 +347,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             NetworkMessage::ClientSentPlayerInputs(
                                 NetworkedPlayerInputs::new(
                                     player1_inputs.clone(),
-                                    pred_allocator.read_fixed(&predicted_simulation.frame)
+                                    pred_allocator.read_fixed(&predicted_simulation.frame) + 1
                                 )
                             )
                         )?;
-                        input_buffer.insert_player_input(
+                        input_buffer.insert_curr_player_inp(
                             player1_inputs.clone(),
-                            pred_allocator.read_fixed(&predicted_simulation.frame),
-                            local_player_id as usize
+                            pred_allocator.read_fixed(&predicted_simulation.frame) + 1
                         );
                         if let Ok(msg) = response_receiver.recv_timeout(Duration::from_millis(1)) {
                             match msg {
                                 NetworkMessage::ServerSentPlayerInputs(inputs) => {
-                                    println!("other player inputs frame {:?}", inputs);
+                                    //println!("other player inputs frame {:?}", inputs);
                                     let player2_inputs = inputs.inputs;
                                     let player_idx = 1;
                                     debug_assert!(player_idx < MAX_PLAYER_COUNT);
-                                    input_buffer.insert_player_input(
+                                    input_buffer.insert_other_player_inp(
                                         player2_inputs.clone(),
-                                        inputs.frame,
-                                        PlayerID::Player2 as usize
+                                        inputs.frame
                                     );
                                 }
                                 NetworkMessage::ServerRequestHostForWorldData => {
@@ -358,15 +375,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             verif_allocator.get_copy_of_state()
                                         )
                                     )?;
-                                    session_player_count += 1;
+                                    if session_player_count == 1 {
+                                        // TODO and player id is not the same as other player
+                                        session_player_count += 1;
+                                        input_buffer.update_player_count(
+                                            local_player_id,
+                                            session_player_count
+                                        );
+                                    }
                                 }
                                 _ => {}
                             }
                         }
-                        if let Some(verif_frame_input) = input_buffer.get_first_verified_input() {
+                        let mut new_verified_state = false;
+                        while let Some(verif_frame_input) = input_buffer.pop_next_verified_frame() {
+                            println!("verif sim");
                             debug_assert!(
-                                verif_allocator.read_fixed(&verified_simulation.frame) ==
-                                    verif_frame_input.frame
+                                verif_allocator.read_fixed(&verified_simulation.frame) + 1 ==
+                                    verif_frame_input.frame,
+                                "verif frame inp {:?}",
+                                verif_frame_input
                             );
                             verified_simulation.update(
                                 dt,
@@ -374,35 +402,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 &mut verif_allocator
                             );
                             debug_assert!(
-                                verif_allocator.read_fixed(&verified_simulation.frame) + 1 ==
+                                verif_allocator.read_fixed(&verified_simulation.frame) ==
                                     verif_frame_input.frame
                             );
+                            new_verified_state = true;
+                        }
+                        if new_verified_state {
                             pred_allocator.set_memory(&verif_allocator.get_copy_of_state());
                         }
-                        for (_, pred_frame_input) in input_buffer.iter_from_last_verified() {
+                        for (
+                            _,
+                            pred_frame_input,
+                        ) in input_buffer.excluding_iter_after_last_verified() {
                             if
-                                pred_allocator.read_fixed(&predicted_simulation.frame) <=
+                                pred_allocator.read_fixed(&predicted_simulation.frame) <
                                 pred_frame_input.frame
                             {
-                                //debug_assert!(
-                                //    pred_allocator.read_fixed(&predicted_simulation.frame) + 1 ==
-                                //        pred_frame_input.frame,
-                                //    "sim frame {} vs pred frame {}",
-                                //    pred_allocator.read_fixed(&predicted_simulation.frame),
-                                //    pred_frame_input.frame
-                                //);
+                                debug_assert!(
+                                    pred_allocator.read_fixed(&predicted_simulation.frame) + 1 ==
+                                        pred_frame_input.frame,
+                                    "curr frame {} vs next frames input {}",
+                                    pred_allocator.read_fixed(&predicted_simulation.frame) + 1,
+                                    pred_frame_input.frame
+                                );
                                 predicted_simulation.update(
                                     dt,
                                     pred_frame_input.inputs.clone(),
                                     &mut pred_allocator
                                 );
-                                //debug_assert!(
-                                //    pred_allocator.read_fixed(&predicted_simulation.frame) + 1 ==
-                                //        pred_frame_input.frame
-                                //);
+                                debug_assert!(
+                                    pred_allocator.read_fixed(&predicted_simulation.frame) ==
+                                        pred_frame_input.frame
+                                );
                             }
                         }
                     }
+
                     predicted_simulation.draw(
                         local_player_id,
                         session_player_count > 1, // TODO
