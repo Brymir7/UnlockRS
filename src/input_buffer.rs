@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 
-use crate::{ types::PlayerInput, MAX_PLAYER_COUNT };
+use crate::{ types::{ Player, PlayerID, PlayerInput }, MAX_PLAYER_COUNT };
 
 #[derive(Debug, Clone)]
 pub struct PlayerInputs {
@@ -16,81 +16,104 @@ impl PlayerInputs {
         }
     }
 
-    fn insert_player_input(&mut self, input: Vec<PlayerInput>, player_id: usize) {
-        self.inputs[player_id] = Some(input);
+    fn insert_player_input(&mut self, input: Vec<PlayerInput>, player_id: PlayerID) {
+        self.inputs[player_id as usize] = Some(input);
     }
 
-    fn is_verified(&self) -> bool {
-        self.inputs.iter().all(|input| input.is_some())
+    pub fn is_verified(&self, player_count: u8) -> bool {
+        let amt = self.inputs
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, i)| {
+                if idx < (player_count as usize) && i.is_some() { Some(i) } else { None }
+            })
+            .count();
+        amt == (player_count as usize)
     }
 }
 
 #[derive(Debug)]
 pub struct InputBuffer {
-    inputs: VecDeque<PlayerInputs>,
-    last_verified_index: usize,
+    pub inputs: VecDeque<PlayerInputs>,
     last_verified_inputs: [Option<Vec<PlayerInput>>; MAX_PLAYER_COUNT as usize],
+    pub player_count: u8,
+    curr_frame: u32,
+    local_player: PlayerID,
 }
 
 impl InputBuffer {
     pub fn new() -> Self {
         InputBuffer {
             inputs: VecDeque::new(),
-            last_verified_index: 0,
             last_verified_inputs: [None, None],
+            player_count: 1,
+            curr_frame: 0,
+            local_player: PlayerID::Player1,
         }
     }
-
-    pub fn insert_player_input(&mut self, inp: Vec<PlayerInput>, frame: u32, player_id: usize) {
-        while self.inputs.len() <= (frame as usize) {
-            self.inputs.push_back(PlayerInputs::new(self.inputs.len() as u32));
-        }
-        self.inputs[frame as usize].insert_player_input(inp, player_id);
-        self.update_last_verified_index();
+    pub fn update_player_count(&mut self, local_player: PlayerID, player_cnt: u8) {
+        self.player_count = player_cnt;
+        self.local_player = local_player;
     }
-
-    fn update_last_verified_index(&mut self) {
-        while
-            self.last_verified_index < self.inputs.len() &&
-            self.inputs[self.last_verified_index].is_verified()
-        {
-            for (player_id, input) in self.inputs[self.last_verified_index].inputs
+    pub fn insert_curr_player_inp(&mut self, inp: Vec<PlayerInput>, frame: u32) {
+        debug_assert!(frame != 0); // no input can happen before its first drawn
+        // frame 0 doesnt exist in arra
+        for i in self.curr_frame + 1..=frame {
+            self.inputs.push_back(PlayerInputs::new(i));
+        }
+        let last_idx = self.inputs.len() - 1;
+        self.inputs[last_idx].insert_player_input(inp, self.local_player);
+        self.curr_frame = frame;
+        debug_assert!(
+            self.inputs
                 .iter()
-                .enumerate() {
-                if let Some(input) = input {
-                    self.last_verified_inputs[player_id] = Some(input.clone());
-                }
-            }
-            self.last_verified_index += 1;
-        }
+                .zip(self.inputs.iter().skip(1))
+                .all(|(a, b)| a.frame <= b.frame)
+        );
     }
-
-    pub fn get_first_verified_input(&self) -> Option<&PlayerInputs> {
-        if self.last_verified_index > 0 {
-            self.inputs.get(self.last_verified_index - 1)
+    pub fn insert_other_player_inp(&mut self, inp: Vec<PlayerInput>, frame: u32) {
+        debug_assert!(frame != 0); // no input can happen before its first drawn
+        // debug_assert!(other != self.local_player);
+        // frame 0 doesnt exist in arra
+        for i in self.curr_frame + 1..=frame {
+            self.inputs.push_back(PlayerInputs::new(i));
+        }
+        let last_idx = self.inputs.len() - 1;
+        self.inputs[last_idx].insert_player_input(inp, if self.local_player == PlayerID::Player1 {
+            PlayerID::Player2
         } else {
-            None
+            PlayerID::Player1
+        });
+        self.curr_frame = frame;
+    }
+    pub fn pop_next_verified_frame(&mut self) -> Option<PlayerInputs> {
+        if let Some(front) = self.inputs.front() {
+            if front.is_verified(self.player_count) {
+                let res = self.inputs.pop_front().unwrap();
+                self.last_verified_inputs = res.inputs.clone();
+                return Some(res);
+            }
         }
+        None
     }
 
-    fn remove_verified_inputs(&mut self) {
-        if self.last_verified_index > 0 {
-            self.inputs.drain(0..self.last_verified_index);
-            self.last_verified_index = 0;
-        }
-    }
-
-    pub fn iter_from_last_verified(&self) -> impl Iterator<Item = (usize, PlayerInputs)> + '_ {
-        (0..self.inputs.len() - self.last_verified_index).map(move |i| {
-            let index = self.last_verified_index + i;
+    pub fn excluding_iter_after_last_verified(
+        &self
+    ) -> impl Iterator<Item = (usize, PlayerInputs)> + '_ {
+        (0..self.inputs.len()).filter_map(move |index| {
             let frame_input = &self.inputs[index];
             let mut new_input = frame_input.clone();
-            for (player_id, input) in new_input.inputs.iter_mut().enumerate() {
-                if input.is_none() {
-                    *input = self.last_verified_inputs[player_id].clone();
-                }
+            if
+                new_input.is_verified(self.player_count) ||
+                new_input.inputs[self.local_player as usize].is_none()
+            {
+                // if our input is None it means the other sim is ahead of us and we can skip this for now
+                return None;
             }
-            (index, new_input)
+            for (player_id, input) in new_input.inputs.iter_mut().enumerate() {
+                *input = self.last_verified_inputs[player_id].clone();
+            }
+            Some((index, new_input))
         })
     }
 }
