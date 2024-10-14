@@ -1,13 +1,26 @@
-implement chunking
-implement reliable world state updating
-implement usable inputs
-implement showcasing world state by just copying it back and forth to verify
-implement simulation + updates on 2 clients
 
 
 
-use compressed format for sending over world state, -> get all data from alloc and then serialize like usual
+
+// implement chunking
+// implement reliable world state updating
+// implement usable inputs
+
+
+//implement simulation + updates on 2 clients
+
+
+
+# mandatory todo 
+
+- bullets
+- implement sending inputs in buffer instead of individual packets in network layer
+- implement SYNC check | by world state CRC / checksum
+
+
 
 todo! _> dynamic max packet length
-todo! _> dynamic connections, reconnections
+todo! _> dynamic connections, reconnections / resync when CRC invalid
 todo! _> encryption, verification using 2 keys 
+todo! _> 4 player multiplayer
+todo! _> more stable server
