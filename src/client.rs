@@ -1,4 +1,4 @@
-use std::{ collections::VecDeque, sync::Arc, thread::sleep, time::Duration };
+use std::{ collections::VecDeque, process::exit, sync::Arc, thread::sleep, time::Duration };
 
 use client_conn::ConnectionServer;
 use input_buffer::InputBuffer;
@@ -17,9 +17,11 @@ use types::{
     MAX_BULLETS,
     MAX_ENEMIES,
 };
+use utils::write_string_to_file;
 use crate::types::NetworkMessage;
 const PHYSICS_FRAME_TIME: f32 = 1.0 / 60.0;
 const SENT_PLAYER_STATE_TIME: f32 = 5.0;
+mod utils;
 mod types;
 mod type_impl;
 mod input_buffer;
@@ -341,11 +343,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             session_player_count += 1;
                             local_player_id = PlayerID::Player2;
                             game_state = GameState::Playing;
-                            input_buffer.update_player_count(
-                                verif_allocator.read_fixed(&verified_simulation.frame),
-                                local_player_id,
-                                session_player_count
-                            );
+                            input_buffer.update_player_count(local_player_id, session_player_count);
                         }
                     }
                 }
@@ -407,7 +405,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         // TODO and player id is not the same as other player
                                         session_player_count += 1;
                                         input_buffer.update_player_count(
-                                            verif_allocator.read_fixed(&verified_simulation.frame),
                                             local_player_id,
                                             session_player_count
                                         );
@@ -417,7 +414,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
                         let mut new_verified_state = false;
-                        println!("input buffer at 0 {:?}", input_buffer.inputs[0]);
+                        // println!("input buffer at 0 {:?}", input_buffer.input_frames[0]);
                         while let Some(verif_frame_input) = input_buffer.pop_next_verified_frame() {
                             println!("verif sim");
                             debug_assert!(
@@ -440,14 +437,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         if new_verified_state {
                             pred_allocator.set_memory(&verif_allocator.get_copy_of_state());
                         }
+
                         for (
                             _,
                             pred_frame_input,
                         ) in input_buffer.excluding_iter_after_last_verified() {
                             if
-                                pred_allocator.read_fixed(&predicted_simulation.frame) <
-                                pred_frame_input.frame
+                                pred_allocator.read_fixed(&predicted_simulation.frame) < // by doing this we exclude verified automatically as it would be in the .frame from verified update above
+                                    pred_frame_input.frame &&
+                                pred_frame_input.inputs[local_player_id as usize].is_some()
                             {
+                                // debug_assert!(
+                                //     pred_frame_input.inputs[local_player_id as usize].is_some(),
+                                //     "{:?}",
+                                //     pred_frame_input // should be some due to verified being base state
+                                // );
                                 debug_assert!(
                                     pred_allocator.read_fixed(&predicted_simulation.frame) + 1 ==
                                         pred_frame_input.frame,
