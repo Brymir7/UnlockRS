@@ -21,7 +21,7 @@
 
 - cleaner client.rs (better abstraction network vs client, shorter main function, easier multiplayer enabling / disabling) 
 
-
+todo _> significantly better memory allocator, even a bump allocator would be better
 todo! _> dynamic max packet length
 todo! _> dynamic connections, reconnections / resync when CRC invalid
 todo! _> encryption, verification using 2 keys 
