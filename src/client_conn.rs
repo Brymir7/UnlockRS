@@ -343,9 +343,6 @@ impl ConnectionServer {
         self.send_reliable(&request)
     }
     fn send_player_inputs(&mut self, inputs: NetworkedPlayerInputs) -> Result<(), std::io::Error> {
-        if inputs.inputs.len() == 0 {
-            return Ok(());
-        }
         let request = NetworkMessage::ClientSentPlayerInputs(inputs);
         self.send_unreliable(&request)
     }
