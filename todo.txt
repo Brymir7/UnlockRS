@@ -27,3 +27,9 @@ todo! _> dynamic connections, reconnections / resync when CRC invalid
 todo! _> encryption, verification using 2 keys 
 todo! _> 4 player multiplayer
 todo! _> more stable server
+
+
+
+
+
+cargo watch -w src/client.rs -w Cargo.toml -x 'run --bin server'

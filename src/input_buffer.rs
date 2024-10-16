@@ -162,7 +162,6 @@ impl InputBuffer {
     }
     pub fn pop_next_verified_frame(&mut self) -> Option<PlayerInputs> {
         if let Some(front) = self.input_frames.front() {
-
             if front.is_verified(self.player_count) {
                 let res = self.input_frames.pop_front().unwrap();
                 self.last_verified_inputs = res.inputs.clone();
@@ -189,6 +188,7 @@ impl InputBuffer {
             //     println!("frame num of verified{}", new_input.frame);
             //     return None;
             // }
+            //println!("input is verified {}", new_input.is_verified(self.player_count));
             for (player_id, input) in new_input.inputs.iter_mut().enumerate() {
                 if input.is_some() {
                     continue;

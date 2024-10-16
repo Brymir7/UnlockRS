@@ -162,7 +162,7 @@ impl ConnectionServer {
                     _ => {}
                 }
             }
-            match self.client_request_receiver.recv_timeout(Duration::from_millis(20)) {
+            match self.client_request_receiver.try_recv() {
                 Ok(request) => {
                     match request {
                         NetworkMessage::GetOwnServerPlayerID => {
@@ -196,10 +196,10 @@ impl ConnectionServer {
                         }
                     }
                 }
-                Err(mpsc::RecvTimeoutError::Timeout) => {
+                Err(mpsc::TryRecvError::Empty) => {
                     // No message received, continue with other operations
                 }
-                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                Err(mpsc::TryRecvError::Disconnected) => {
                     // Channel has been disconnected, exit the loop
                     break;
                 }

@@ -235,10 +235,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             GameState::WaitingForPlayerList => {
                 draw_text("Waiting for player list...", 20.0, 40.0, 30.0, WHITE);
-                if
-                    let Ok(NetworkMessage::ServerSentPlayerIDs(ids)) =
-                        response_receiver.recv_timeout(Duration::from_millis(20))
-                {
+                if let Ok(NetworkMessage::ServerSentPlayerIDs(ids)) = response_receiver.try_recv() {
                     println!("received ids {:?}", ids);
                     other_player_ids = ids;
                     game_state = GameState::ChoosePlayer;
@@ -285,10 +282,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
 
                 if chose_player {
-                    if
-                        let Ok(NetworkMessage::ServerSentWorld(data)) =
-                            response_receiver.recv_timeout(Duration::from_millis(20))
-                    {
+                    if let Ok(NetworkMessage::ServerSentWorld(data)) = response_receiver.try_recv() {
                         verified_simulation = Some(
                             Simulation::new_from_serialized(data.clone(), &mut verif_allocator)
                         );
@@ -303,48 +297,48 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             verif_allocator.read_fixed(&verified_simulation.unwrap().frame) > 0
                         );
 
-                        if let Ok(msg) = response_receiver.recv_timeout(Duration::from_millis(1)) {
-                            match msg {
-                                NetworkMessage::ServerSentPlayerInputs(inputs) => {
-                                    //println!("other player inputs frame {:?}", inputs);
-                                    let player2_inputs = inputs.inputs;
-                                    let player_idx = 1;
-                                    debug_assert!(player_idx < MAX_PLAYER_COUNT);
-                                    input_buffer.insert_curr_player_inp(
-                                        player2_inputs.clone(),
-                                        inputs.frame
-                                    );
-                                }
-                                _ => {}
-                            }
-                        }
-                        if let Some(verified_simulation) = verified_simulation {
-                            println!("playing catchup with the new inputs");
-                            while
-                                let Some(verif_frame_input) = input_buffer.pop_next_verified_frame()
-                            {
-                                println!("verif sim catchup");
-                                debug_assert!(
-                                    verif_allocator.read_fixed(&verified_simulation.frame) + 1 ==
-                                        verif_frame_input.frame,
-                                    "verif frame inp {:?}",
-                                    verif_frame_input
-                                );
-                                verified_simulation.update(
-                                    PHYSICS_FRAME_TIME,
-                                    verif_frame_input.inputs.clone(),
-                                    &mut verif_allocator
-                                );
-                                debug_assert!(
-                                    verif_allocator.read_fixed(&verified_simulation.frame) ==
-                                        verif_frame_input.frame
-                                );
-                            }
-                            session_player_count += 1;
-                            local_player_id = PlayerID::Player2;
-                            game_state = GameState::Playing;
-                            input_buffer.update_player_count(local_player_id, session_player_count);
-                        }
+                        // while let Ok(msg) = response_receiver.try_recv() {
+                        //     match msg {
+                        //         NetworkMessage::ServerSentPlayerInputs(inputs) => {
+                        //             println!("other player inputs frame {:?}", inputs);
+                        //             let player2_inputs = inputs.inputs;
+                        //             let player_idx = 1;
+                        //             debug_assert!(player_idx < MAX_PLAYER_COUNT);
+                        //             input_buffer.insert_curr_player_inp(
+                        //                 player2_inputs.clone(),
+                        //                 inputs.frame
+                        //             );
+                        //         }
+                        //         _ => {}
+                        //     }
+                        // }
+                        // if let Some(verified_simulation) = verified_simulation {
+                        //     println!("playing catchup with the new inputs");
+                        //     while
+                        //         let Some(verif_frame_input) = input_buffer.pop_next_verified_frame()
+                        //     {
+                        //         println!("verif sim catchup");
+                        //         debug_assert!(
+                        //             verif_allocator.read_fixed(&verified_simulation.frame) + 1 ==
+                        //                 verif_frame_input.frame,
+                        //             "verif frame inp {:?}",
+                        //             verif_frame_input
+                        //         );
+                        //         verified_simulation.update(
+                        //             PHYSICS_FRAME_TIME,
+                        //             verif_frame_input.inputs.clone(),
+                        //             &mut verif_allocator
+                        //         );
+                        //         debug_assert!(
+                        //             verif_allocator.read_fixed(&verified_simulation.frame) ==
+                        //                 verif_frame_input.frame
+                        //         );
+                        //     }
+                        // }
+                        session_player_count += 1;
+                        local_player_id = PlayerID::Player2;
+                        game_state = GameState::Playing;
+                        input_buffer.update_player_count(local_player_id, session_player_count);
                     }
                 }
             }
@@ -381,7 +375,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             player1_inputs.clone(),
                             pred_allocator.read_fixed(&predicted_simulation.frame) + 1
                         );
-                        if let Ok(msg) = response_receiver.recv_timeout(Duration::from_millis(1)) {
+                        if let Ok(msg) = response_receiver.try_recv() {
                             match msg {
                                 NetworkMessage::ServerSentPlayerInputs(inputs) => {
                                     //println!("other player inputs frame {:?}", inputs);
@@ -404,6 +398,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         player2_inputs.clone(),
                                         inputs.frame
                                     );
+                                    if local_player_id == PlayerID::Player2 {
+                                        println!("other player inputs frame {:?}", player2_inputs);
+                                        println!(
+                                            "input buffer now {:?} at [0]",
+                                            input_buffer.input_frames[0]
+                                        );
+                                    }
                                 }
                                 NetworkMessage::ServerRequestHostForWorldData => {
                                     // this also means that we are connecting with someone and its now a mulitplayer lobby
@@ -504,7 +505,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     );
                     draw_text(
                         &format!(
-                            "Current verified Frame: {}, pred frame {} ",
+                            "Player is: {:?} | Current verified Frame: {} |  pred frame {} ",
+                            local_player_id,
                             verif_allocator.read_fixed(&verified_simulation.frame),
                             pred_allocator.read_fixed(&predicted_simulation.frame)
                         ),

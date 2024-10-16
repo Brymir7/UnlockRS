@@ -1,6 +1,7 @@
 use std::hash::Hash;
 use std::net::{ SocketAddr, UdpSocket };
 use std::collections::HashMap;
+use std::process::exit;
 use std::time::{ Duration, Instant };
 use macroquad::input;
 use rand::seq;
@@ -112,6 +113,7 @@ impl Server {
                     *sent_time = now;
                     match self.socket.send_to(&message.bytes, client_addr) {
                         Ok(_) => {
+                            //exit(1);
                             println!("Resent message {:?} to client {:?}", seq, client_addr);
                         }
                         Err(e) => {
@@ -248,7 +250,7 @@ impl Server {
     }
     pub fn send_reliable(&mut self, msg: NetworkMessage, dst: &SocketAddr) {
         let seq_num = SeqNum(self.sequence_number);
-        println!("trying to send message x to client {:?}", msg);
+        //println!("trying to send message x to client {:?}", msg);
 
         let serialized_msg = msg.serialize(types::NetworkMessageType::Reliable(seq_num));
         match serialized_msg {
