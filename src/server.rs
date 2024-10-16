@@ -190,36 +190,40 @@ impl Server {
     fn broadcast_inputs(&mut self, inputs: &BufferedNetworkedPlayerInputs, src: &SocketAddr) {
         let seq_num = SeqNum(self.sequence_number); // TODO refactor to not be able to use sequence number without increasing after
         self.sequence_number = self.sequence_number.wrapping_add(1);
-        if let Some(inp_buffer) = self.unack_input_buffer.get_mut(src) {
-            inp_buffer.insert_player_input(inputs.clone());
-            if let Some(seq_num_to_frame) = self.unack_input_seq_nums_to_frame.get_mut(src) {
-                seq_num_to_frame.insert(
-                    seq_num,
-                    inp_buffer.buffered_inputs
-                        .last()
-                        .expect("If we send sth it shouldnt be empty").frame
-                );
-            } else {
-                println!(
-                    "BUG seq_num_to_frame should always exist for a connection when inp buffer exists"
-                );
-            }
-        } else {
-            println!(
-                "Unack input buffer doesn't exist for client, either he timed out or code is buggy"
-            );
-        }
 
         if let Some(connections) = self.connections.get(src) {
-            let addresses: Vec<_> = connections.clone();
             let msg = NetworkMessage::ServerSentPlayerInputs(inputs.clone()).serialize(
                 types::NetworkMessageType::SendOnceButReceiveAck(seq_num)
             );
             self.sequence_number = self.sequence_number.wrapping_add(1);
+            let addresses: Vec<_> = connections.clone();
             match msg {
                 SerializedMessageType::NonChunked(msg) => {
                     for addr in addresses {
-                        self.socket.send_to(&msg.bytes, addr);
+                        // insert these unack messages for each target, such that when the target sends an ack for these sequence numbers we know
+                        if let Some(inp_buffer) = self.unack_input_buffer.get_mut(&addr) {
+                            inp_buffer.insert_player_input(inputs.clone());
+                            if
+                                let Some(seq_num_to_frame) =
+                                    self.unack_input_seq_nums_to_frame.get_mut(&addr)
+                            {
+                                seq_num_to_frame.insert(
+                                    seq_num,
+                                    inp_buffer.buffered_inputs
+                                        .last()
+                                        .expect("If we send sth it shouldnt be empty").frame
+                                );
+                                self.socket.send_to(&msg.bytes, addr);
+                            } else {
+                                println!(
+                                    "BUG seq_num_to_frame should always exist for a connection when inp buffer exists"
+                                );
+                            }
+                        } else {
+                            println!(
+                                "Unack input buffer doesn't exist for client, either he timed out or code is buggy"
+                            );
+                        }
                     }
                 }
                 SerializedMessageType::Chunked(_) => panic!("Inputs should never be chunked"),
@@ -267,8 +271,10 @@ impl Server {
                 );
             }
             NetworkMessage::ClientSideAck(seq_num) => {
-                todo!("Cannot us sequence number need to use player ID and sequence number or sth like that because otherwise an ????");
-                the client that sends it isnt the one who should also acknowledge te inputs
+                // todo!(
+                //     "Cannot us sequence number need to use player ID and sequence number or sth like that because otherwise an ????"
+                // );
+                // the client that sends it isnt the one who should also acknowledge te inputs
                 self.handle_clients_ack(seq_num, src);
             }
             NetworkMessage::ClientConnectToOtherWorld(id) => {

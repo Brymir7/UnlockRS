@@ -3,7 +3,7 @@ use std::{
     collections::{ HashMap, HashSet },
     net::UdpSocket,
     sync::{ mpsc, Arc, Mutex },
-    thread,
+    thread::{self, sleep},
     time::{ Duration, Instant },
 };
 
@@ -385,6 +385,10 @@ impl ConnectionServer {
                 LOGGER.log_simulated_packet_loss(self.sequence_number);
                 return Ok(());
             }
+        }
+        #[cfg(feature = "simulation_mode")]
+        {
+            sleep(Duration::from_millis((rng_gen_range(0.0..0.05) * 1000.0) as u64));
         }
         match request {
             crate::types::SerializedMessageType::NonChunked(request) => {
