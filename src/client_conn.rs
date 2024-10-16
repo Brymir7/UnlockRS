@@ -18,7 +18,7 @@ mod simulation {
         let mut rng = rand::thread_rng();
         rng.gen_range(range)
     }
-    pub const PACKET_LOSS_PERCENTAGE: f32 = 25.0;
+    pub const PACKET_LOSS_PERCENTAGE: f32 = 1.0;
     pub const LATENCY_MS: Duration = Duration::from_millis(100);
 }
 const LOGGER: NetworkLogger = NetworkLogger { log: false };
@@ -373,7 +373,7 @@ impl ConnectionServer {
             return Err(SendInputsError::Disconnected);
         }
 
-        self.unack_input_buffer.buffered_inputs.push(inputs.clone());
+        self.unack_input_buffer.insert_player_input(inputs.clone());
         self.unack_input_seq_nums_to_frame.insert(SeqNum(self.sequence_number), inputs.frame);
 
         let request = NetworkMessage::ClientSentPlayerInputs(

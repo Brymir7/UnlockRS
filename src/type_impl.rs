@@ -626,14 +626,14 @@ impl PlayerID {
         }
     }
 }
-use std::io::{self, Write};
+use std::io::{ self, Write };
 impl BufferedNetworkedPlayerInputs {
     pub fn default() -> Self {
         BufferedNetworkedPlayerInputs {
             buffered_inputs: Vec::new(),
         }
     }
-    pub fn insert_player_input(&mut self, other: BufferedNetworkedPlayerInputs) {
+    pub fn bulk_insert_player_input(&mut self, other: BufferedNetworkedPlayerInputs) {
         for networked_input in other.buffered_inputs {
             if
                 let None = self.buffered_inputs
@@ -644,6 +644,21 @@ impl BufferedNetworkedPlayerInputs {
                 self.buffered_inputs.push(networked_input);
             }
         }
+        debug_assert!(
+            self.buffered_inputs.iter().all(|input| {
+                self.buffered_inputs
+                    .iter()
+                    .filter(|other_inp| **other_inp == *input)
+                    .count() == 1
+            })
+        );
+    }
+    pub fn insert_player_input(&mut self, networked_input: NetworkedPlayerInput) {
+        if let None = self.buffered_inputs.iter_mut().find(|i| i.frame == networked_input.frame) {
+            // Insert new NetworkedPlayerInput if frame doesn't exist
+            self.buffered_inputs.push(networked_input);
+        }
+
         debug_assert!(
             self.buffered_inputs.iter().all(|input| {
                 self.buffered_inputs
