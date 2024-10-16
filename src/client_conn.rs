@@ -236,37 +236,22 @@ impl ConnectionServer {
 
             self.handle_retransmissions();
         }
-
         receive_thread.join().unwrap();
     }
-    pub fn handle_server_input_ack(&mut self, seq_num: SeqNum) {
+    pub fn handle_server_input_ack(&mut self, seq_num: SeqNum) -> bool {
         if let Some(frame) = self.unack_input_seq_nums_to_frame.remove(&seq_num) {
             self.unack_input_buffer.discard_acknowledged_frames(frame);
+            return true;
         }
+        return false;
     }
     pub fn handle_ack(&mut self, acked_seq_num: SeqNum) {
-        self.handle_server_input_ack(acked_seq_num);
+        let handled = self.handle_server_input_ack(acked_seq_num);
+        if handled {
+            return;
+        }
         self.pending_acks.remove(&acked_seq_num);
     }
-    // pub fn send_unreliable(&self, request: &NetworkMessage) -> Result<(), std::io::Error> {
-    //     let serialized_message = request.serialize(crate::types::NetworkMessageType::SendOnce);
-    //     #[cfg(feature = "simulation_mode")]
-    //     {
-    //         if rng_gen_range(0.0..100.0) < PACKET_LOSS_PERCENTAGE {
-    //             LOGGER.log_simulated_packet_loss(self.sequence_number);
-    //             return Ok(());
-    //         }
-    //     }
-    //     match serialized_message {
-    //         crate::types::SerializedMessageType::NonChunked(serialized_message) => {
-    //             self.socket.send(&serialized_message.bytes)?;
-    //             Ok(())
-    //         }
-    //         crate::types::SerializedMessageType::Chunked(_) => {
-    //             panic!("Cannot send unreliable in chunks rn");
-    //         }
-    //     }
-    // }
 
     pub fn send_reliable(&mut self, request: &NetworkMessage) -> Result<(), std::io::Error> {
         let serialized_message = request.serialize(
