@@ -5,10 +5,11 @@ use input_buffer::InputBuffer;
 use macroquad::{ input, prelude::*, telemetry::Frame };
 use memory::{ PageAllocator, PAGE_SIZE_BYTES };
 use types::{
+    BufferedNetworkedPlayerInputs,
     Bullet,
     Enemy,
     GameState,
-    NetworkedPlayerInputs,
+    NetworkedPlayerInput,
     Player,
     PlayerID,
     PlayerInput,
@@ -206,7 +207,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut verified_simulation: Option<Simulation> = None;
 
     let (connection_server, request_sender, response_receiver) = ConnectionServer::new()?;
-    ConnectionServer::start(Arc::clone(&connection_server));
+    ConnectionServer::start(connection_server);
     let mut local_player_id = PlayerID::Player1;
 
     let mut chose_player = false;
@@ -229,7 +230,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     predicted_simulation = Some(Simulation::new(&mut pred_allocator));
                     game_state = GameState::Playing;
                 } else if is_key_pressed(KeyCode::J) {
-                    request_sender.send(NetworkMessage::GetServerPlayerIDs)?;
+                    request_sender.send(
+                        types::GameRequestToNetwork::DirectRequest(
+                            NetworkMessage::GetServerPlayerIDs
+                        )
+                    )?;
                     game_state = GameState::WaitingForPlayerList;
                 }
             }
@@ -274,7 +279,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             other_player_ids[i as usize]
                         );
                         request_sender.send(
-                            NetworkMessage::ClientConnectToOtherWorld(player_to_connect_to)
+                            types::GameRequestToNetwork::DirectRequest(
+                                NetworkMessage::ClientConnectToOtherWorld(player_to_connect_to)
+                            )
                         )?;
                         chose_player = true;
                         break;
@@ -364,14 +371,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     if timer >= PHYSICS_FRAME_TIME {
                         timer -= PHYSICS_FRAME_TIME;
                         request_sender.send(
-                            NetworkMessage::ClientSentPlayerInputs(
-                                NetworkedPlayerInputs::new(player1_inputs.clone(), if
-                                    session_player_count > 1
-                                {
-                                    pred_allocator.read_fixed(&predicted_simulation.frame) + 1
-                                } else {
-                                    verif_allocator.read_fixed(&verified_simulation.frame) + 1
-                                })
+                            types::GameRequestToNetwork::IndirectRequest(
+                                types::GameMessage::ClientSentPlayerInputs(
+                                    NetworkedPlayerInput::new(player1_inputs.clone(), if
+                                        session_player_count > 1
+                                    {
+                                        pred_allocator.read_fixed(&predicted_simulation.frame) + 1
+                                    } else {
+                                        verif_allocator.read_fixed(&verified_simulation.frame) + 1
+                                    })
+                                )
                             )
                         )?;
                         input_buffer.insert_curr_player_inp(player1_inputs.clone(), if
@@ -392,18 +401,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     // {
                                     //     println!("server sent input packet  {:?}", inputs.clone());
                                     // }
-                                    let player2_inputs = inputs.inputs;
-                                    let player_idx = 1;
-                                    debug_assert!(player_idx < MAX_PLAYER_COUNT);
-                                    // println!(
-                                    //     "input buffer at 0 {:?}",
-                                    //     input_buffer.input_frames[0]
-                                    // );
+                                    for input in inputs.buffered_inputs {
+                                        let player2_inputs = input.inputs;
+                                        let player_idx = 1;
+                                        debug_assert!(player_idx < MAX_PLAYER_COUNT);
+                                        // println!(
+                                        //     "input buffer at 0 {:?}",
+                                        //     input_buffer.input_frames[0]
+                                        // );
 
-                                    input_buffer.insert_other_player_inp(
-                                        player2_inputs.clone(),
-                                        inputs.frame
-                                    );
+                                        input_buffer.insert_other_player_inp(
+                                            player2_inputs.clone(),
+                                            input.frame
+                                        );
+                                    }
                                 }
                                 NetworkMessage::ServerRequestHostForWorldData => {
                                     if session_player_count == 1 {
@@ -419,17 +430,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     }
                                     // this also means that we are connecting with someone and its now a mulitplayer lobby
                                     request_sender.send(
-                                        NetworkMessage::ClientSentWorld(
-                                            verif_allocator.get_copy_of_state()
+                                        types::GameRequestToNetwork::DirectRequest(
+                                            NetworkMessage::ClientSentWorld(
+                                                verif_allocator.get_copy_of_state()
+                                            )
                                         )
                                     )?;
                                     request_sender.send(
-                                        NetworkMessage::ClientSentPlayerInputs(
-                                            NetworkedPlayerInputs::new(
-                                                player1_inputs.clone(),
-                                                pred_allocator.read_fixed(
-                                                    &predicted_simulation.frame
-                                                ) + 1
+                                        types::GameRequestToNetwork::IndirectRequest(
+                                            types::GameMessage::ClientSentPlayerInputs(
+                                                NetworkedPlayerInput::new(
+                                                    player1_inputs.clone(),
+                                                    pred_allocator.read_fixed(
+                                                        &predicted_simulation.frame
+                                                    ) + 1
+                                                )
                                             )
                                         )
                                     )?;
@@ -437,7 +452,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     //     "Host sent frame num {}",
                                     //     pred_allocator.read_fixed(&predicted_simulation.frame) + 1
                                     // );
-
                                 }
                                 _ => {}
                             }
