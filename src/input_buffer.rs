@@ -60,16 +60,17 @@ impl InputBuffer {
         curr_verified_frame: u32
     ) {
         if local_player == self.local_player {
-            self.input_frames.clear();
-            let mut initial_inputs = PlayerInputs {
-                frame: curr_verified_frame + 1,
-                inputs: [None, None],
-            };
-            initial_inputs.inputs[local_player as usize] = Some(Vec::new());
-            self.input_frames.push_back(initial_inputs);
+            // verified sim is running in single player so when it switches then we need to reset this
             self.last_verified_inputs = [None, None];
         } else {
+            // other player accumulates until world data is sent over, we can and have to remove all these to continue
             self.input_frames.retain(|input_frame| input_frame.frame >= curr_verified_frame + 1);
+            // swap because we changed player we need to swap inputs to new location
+            self.input_frames
+                .iter_mut()
+                .for_each(|input_frame|
+                    input_frame.inputs.swap(local_player as usize, self.local_player as usize)
+                );
         }
         self.local_player = local_player;
         println!("updating player count to {:?}", self);
