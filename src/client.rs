@@ -288,28 +288,58 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
 
                 if chose_player {
-                    if let Ok(NetworkMessage::ServerSentWorld(data)) = response_receiver.try_recv() {
-                        verified_simulation = Some(
-                            Simulation::new_from_serialized(data.clone(), &mut verif_allocator)
-                        );
-                        predicted_simulation = Some(
-                            Simulation::new_from_serialized(data, &mut pred_allocator)
-                        );
-                        debug_assert!(
-                            verif_allocator.read_fixed(&verified_simulation.unwrap().frame) ==
-                                pred_allocator.read_fixed(&predicted_simulation.unwrap().frame)
-                        );
-                        debug_assert!(
-                            verif_allocator.read_fixed(&verified_simulation.unwrap().frame) > 0
-                        );
-                        session_player_count = session_player_count + 1;
-                        local_player_id = PlayerID::Player2;
-                        game_state = GameState::Playing;
-                        input_buffer.update_player_count(
-                            local_player_id,
-                            session_player_count,
-                            verif_allocator.read_fixed(&verified_simulation.unwrap().frame)
-                        );
+                    if let Ok(msg) = response_receiver.try_recv() {
+                        match msg {
+                            NetworkMessage::ServerSentPlayerInputs(inputs) => {
+                                for input in inputs.buffered_inputs {
+                                    let other_player = input.inputs;
+                                    println!(
+                                        "received inputs from server frame : {:?}",
+                                        input.frame
+                                    );
+                                    input_buffer.insert_other_player_inp(
+                                        other_player.clone(),
+                                        input.frame
+                                    );
+                                }
+                            }
+                            NetworkMessage::ServerSentWorld(data) => {
+                                verified_simulation = Some(
+                                    Simulation::new_from_serialized(
+                                        data.clone(),
+                                        &mut verif_allocator
+                                    )
+                                );
+                                predicted_simulation = Some(
+                                    Simulation::new_from_serialized(data, &mut pred_allocator)
+                                );
+                                debug_assert!(
+                                    verif_allocator.read_fixed(
+                                        &verified_simulation.unwrap().frame
+                                    ) ==
+                                        pred_allocator.read_fixed(
+                                            &predicted_simulation.unwrap().frame
+                                        )
+                                );
+                                debug_assert!(
+                                    verif_allocator.read_fixed(
+                                        &verified_simulation.unwrap().frame
+                                    ) > 0
+                                );
+                                session_player_count = session_player_count + 1;
+                                local_player_id = PlayerID::Player2;
+                                game_state = GameState::Playing;
+                                input_buffer.update_player_count(
+                                    local_player_id,
+                                    session_player_count,
+                                    verif_allocator.read_fixed(&verified_simulation.unwrap().frame)
+                                );
+                            }
+                            _ =>
+                                println!(
+                                    "Unexpected message received when waiting for world download"
+                                ),
+                        }
                     }
                 }
             }
@@ -347,6 +377,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 )
                             )
                         )?;
+                        println!(
+                            "client sent sth for frayme {}",
+                            pred_allocator.read_fixed(&predicted_simulation.frame) + 1
+                        );
                         input_buffer.insert_curr_player_inp(curr_player.clone(), if
                             session_player_count > 1
                         {
@@ -404,7 +438,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         )
                                     )?;
                                     println!(
-                                        "sent state frame {}",
+                                        "sent state frame {} and input for + 1 of that ",
                                         &pred_allocator.read_fixed(&predicted_simulation.frame)
                                     );
                                 }

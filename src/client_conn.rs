@@ -3,7 +3,7 @@ use std::{
     collections::{ HashMap, HashSet },
     net::UdpSocket,
     sync::{ mpsc, Arc, Mutex },
-    thread::{self, sleep},
+    thread::{ self, sleep },
     time::{ Duration, Instant },
 };
 
@@ -18,7 +18,7 @@ mod simulation {
         let mut rng = rand::thread_rng();
         rng.gen_range(range)
     }
-    pub const PACKET_LOSS_PERCENTAGE: f32 = 75.0;
+    pub const PACKET_LOSS_PERCENTAGE: f32 = 25.0;
     pub const LATENCY_MS: Duration = Duration::from_millis(100);
 }
 const LOGGER: NetworkLogger = NetworkLogger { log: false };
@@ -372,6 +372,7 @@ impl ConnectionServer {
             self.unack_input_buffer.buffered_inputs.clear();
             return Err(SendInputsError::Disconnected);
         }
+
         self.unack_input_buffer.buffered_inputs.push(inputs.clone());
         self.unack_input_seq_nums_to_frame.insert(SeqNum(self.sequence_number), inputs.frame);
 
@@ -379,6 +380,7 @@ impl ConnectionServer {
             self.unack_input_buffer.clone()
         ).serialize(NetworkMessageType::SendOnceButReceiveAck(SeqNum(self.sequence_number)));
 
+        self.sequence_number = self.sequence_number.wrapping_add(1);
         #[cfg(feature = "simulation_mode")]
         {
             if rng_gen_range(0.0..100.0) < PACKET_LOSS_PERCENTAGE {
@@ -390,6 +392,7 @@ impl ConnectionServer {
         {
             sleep(Duration::from_millis((rng_gen_range(0.0..0.05) * 1000.0) as u64));
         }
+
         match request {
             crate::types::SerializedMessageType::NonChunked(request) => {
                 let res = self.socket.send(&request.bytes);
