@@ -486,6 +486,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     pred_frame_input.frame &&
                                 pred_frame_input.inputs[local_player_id as usize].is_some()
                             {
+                                request_sender.send(
+                                    types::GameRequestToNetwork::IndirectRequest(
+                                        types::GameMessage::ClientSentPlayerInputs(
+                                            NetworkedPlayerInput::new(
+                                                curr_player.clone(),
+                                                pred_frame_input.frame
+                                            )
+                                        )
+                                    )
+                                )?;
                                 // debug_assert!(
                                 //     pred_frame_input.inputs[local_player_id as usize].is_some(),
                                 //     "{:?}",
@@ -507,9 +517,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     pred_allocator.read_fixed(&predicted_simulation.frame) ==
                                         pred_frame_input.frame
                                 );
+                                println!("debug sim");
                             }
                         }
                     }
+
                     if session_player_count > 1 {
                         predicted_simulation.draw(
                             local_player_id,
