@@ -1,4 +1,10 @@
-use std::{ collections::VecDeque, process::exit, sync::Arc, thread::sleep, time::Duration };
+use std::{
+    collections::VecDeque,
+    process::exit,
+    sync::Arc,
+    thread::sleep,
+    time::Duration,
+};
 
 use client_conn::ConnectionServer;
 use input_buffer::InputBuffer;
@@ -14,11 +20,10 @@ use types::{
     PlayerID,
     PlayerInput,
     ServerPlayerID,
-    Simulation,
+    Simulation,ö
     MAX_BULLETS,
     MAX_ENEMIES,
 };
-use utils::write_string_to_file;
 use crate::types::NetworkMessage;
 const PHYSICS_FRAME_TIME: f32 = 1.0 / 60.0;
 const SENT_PLAYER_STATE_TIME: f32 = 5.0;
@@ -216,6 +221,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut timer = 0.0;
     let mut input_buffer = InputBuffer::new();
     let mut session_player_count = 1;
+    let mut initial_frame = false;
     loop {
         clear_background(BLACK);
 
@@ -303,49 +309,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         debug_assert!(
                             verif_allocator.read_fixed(&verified_simulation.unwrap().frame) > 0
                         );
-
-                        // while let Ok(msg) = response_receiver.try_recv() {
-                        //     match msg {
-                        //         NetworkMessage::ServerSentPlayerInputs(inputs) => {
-                        //             println!("other player inputs frame {:?}", inputs);
-                        //             let player2_inputs = inputs.inputs;
-                        //             let player_idx = 1;
-                        //             debug_assert!(player_idx < MAX_PLAYER_COUNT);
-                        //             input_buffer.insert_curr_player_inp(
-                        //                 player2_inputs.clone(),
-                        //                 inputs.frame
-                        //             );
-                        //         }
-                        //         _ => {}
-                        //     }
-                        // }
-                        // if let Some(verified_simulation) = verified_simulation {
-                        //     println!("playing catchup with the new inputs");
-                        //     while
-                        //         let Some(verif_frame_input) = input_buffer.pop_next_verified_frame()
-                        //     {
-                        //         println!("verif sim catchup");
-                        //         debug_assert!(
-                        //             verif_allocator.read_fixed(&verified_simulation.frame) + 1 ==
-                        //                 verif_frame_input.frame,
-                        //             "verif frame inp {:?}",
-                        //             verif_frame_input
-                        //         );
-                        //         verified_simulation.update(
-                        //             PHYSICS_FRAME_TIME,
-                        //             verif_frame_input.inputs.clone(),
-                        //             &mut verif_allocator
-                        //         );
-                        //         debug_assert!(
-                        //             verif_allocator.read_fixed(&verified_simulation.frame) ==
-                        //                 verif_frame_input.frame
-                        //         );
-                        //     }
-                        // }
                         session_player_count += 1;
                         local_player_id = PlayerID::Player2;
                         game_state = GameState::Playing;
                         input_buffer.update_player_count(local_player_id, session_player_count);
+                        initial_frame = true;
                     }
                 }
             }
@@ -405,10 +373,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         let player2_inputs = input.inputs;
                                         let player_idx = 1;
                                         debug_assert!(player_idx < MAX_PLAYER_COUNT);
-                                        // println!(
-                                        //     "input buffer at 0 {:?}",
-                                        //     input_buffer.input_frames[0]
-                                        // );
 
                                         input_buffer.insert_other_player_inp(
                                             player2_inputs.clone(),
@@ -436,6 +400,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             )
                                         )
                                     )?;
+                                    println!(
+                                        "sent state frame {}",
+                                        &pred_allocator.read_fixed(&predicted_simulation.frame)
+                                    );
                                     request_sender.send(
                                         types::GameRequestToNetwork::IndirectRequest(
                                             types::GameMessage::ClientSentPlayerInputs(
@@ -457,7 +425,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
                         let mut new_verified_state = false;
-
+                        println!(
+                            "input buffer at [0] {:?} and [1] {:?}",
+                            input_buffer.input_frames[0],
+                            input_buffer.input_frames.get(1)
+                        );
+                        if initial_frame && input_buffer.input_frames.len() > 1 {
+                            initial_frame = false;
+                            input_buffer.input_frames.pop_front();
+                        }
                         while let Some(verif_frame_input) = input_buffer.pop_next_verified_frame() {
                             // println!("verif sim");
                             debug_assert!(

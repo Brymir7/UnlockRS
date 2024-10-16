@@ -1,3 +1,5 @@
+use std::fs::OpenOptions;
+
 use crate::types::{
     ChunkOfMessage,
     ChunkedMessageCollector,
@@ -624,7 +626,7 @@ impl PlayerID {
         }
     }
 }
-
+use std::io::{self, Write};
 impl BufferedNetworkedPlayerInputs {
     pub fn default() -> Self {
         BufferedNetworkedPlayerInputs {
@@ -653,6 +655,26 @@ impl BufferedNetworkedPlayerInputs {
     }
 
     pub fn discard_acknowledged_frames(&mut self, frame: u32) {
+        let discarded_frames: Vec<u32> = self.buffered_inputs
+            .iter()
+            .filter(|input| input.frame < frame)
+            .map(|input| input.frame)
+            .collect();
+
+        // Log discarded frames to a file
+        if !discarded_frames.is_empty() {
+            let file_path = "discarded_frames.log";
+            let mut file = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(file_path)
+                .expect("Failed to open log file");
+
+            for frame in discarded_frames {
+                writeln!(file, "Discarded frame: {}", frame).expect("Failed to write to log file");
+            }
+        }
+
         self.buffered_inputs.retain(|input| input.frame >= frame);
 
         debug_assert!(
