@@ -240,7 +240,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             GameState::WaitingForPlayerList => {
                 draw_text("Waiting for player list...", 20.0, 40.0, 30.0, WHITE);
                 if let Ok(NetworkMessage::ServerSentPlayerIDs(ids)) = response_receiver.try_recv() {
-                    println!("received ids {:?}", ids);
+                    // println!("received ids {:?}", ids);
                     other_player_ids = ids;
                     game_state = GameState::ChoosePlayer;
                 }
@@ -293,10 +293,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             NetworkMessage::ServerSentPlayerInputs(inputs) => {
                                 for input in inputs.buffered_inputs {
                                     let other_player = input.inputs;
-                                    println!(
-                                        "received inputs from server frame : {:?}",
-                                        input.frame
-                                    );
+                                    // println!(
+                                    //     "received inputs from server frame : {:?}",
+                                    //     input.frame
+                                    // );
                                     input_buffer.insert_other_player_inp(
                                         other_player.clone(),
                                         input.frame
@@ -377,10 +377,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 )
                             )
                         )?;
-                        println!(
-                            "client sent sth for frayme {}",
-                            pred_allocator.read_fixed(&predicted_simulation.frame) + 1
-                        );
+                        // println!(
+                        //     "client sent sth for frayme {}",
+                        //     pred_allocator.read_fixed(&predicted_simulation.frame) + 1
+                        // );
                         input_buffer.insert_curr_player_inp(curr_player.clone(), if
                             session_player_count > 1
                         {
@@ -393,10 +393,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 NetworkMessage::ServerSentPlayerInputs(inputs) => {
                                     for input in inputs.buffered_inputs {
                                         let other_player = input.inputs;
-                                        println!(
-                                            "received inputs from server frame : {:?}",
-                                            input.frame
-                                        );
+                                        // println!(
+                                        //     "received inputs from server frame : {:?}",
+                                        //     input.frame
+                                        // );
                                         input_buffer.insert_other_player_inp(
                                             other_player.clone(),
                                             input.frame
@@ -437,10 +437,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             )
                                         )
                                     )?;
-                                    println!(
-                                        "sent state frame {} and input for + 1 of that ",
-                                        &pred_allocator.read_fixed(&predicted_simulation.frame)
-                                    );
+                                    // println!(
+                                    //     "sent state frame {} and input for + 1 of that ",
+                                    //     &pred_allocator.read_fixed(&predicted_simulation.frame)
+                                    // );
                                 }
                                 _ => {}
                             }
@@ -451,11 +451,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         //     exit(1);
                         // }
                         while let Some(verif_frame_input) = input_buffer.pop_next_verified_frame() {
-                            println!(
-                                "verif sim current frame is {} so +1  after, input frame {:?}",
-                                verif_allocator.read_fixed(&verified_simulation.frame),
-                                verif_frame_input
-                            );
+                            // println!(
+                            //     "verif sim current frame is {} so +1  after, input frame {:?}",
+                            //     verif_allocator.read_fixed(&verified_simulation.frame),
+                            //     verif_frame_input
+                            // );
                             debug_assert!(
                                 verif_allocator.read_fixed(&verified_simulation.frame) + 1 ==
                                     verif_frame_input.frame,
@@ -517,7 +517,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     pred_allocator.read_fixed(&predicted_simulation.frame) ==
                                         pred_frame_input.frame
                                 );
-                                println!("debug sim");
+                                // println!("debug sim");
                             }
                         }
                     }

@@ -22,8 +22,8 @@ use types::{
 mod type_impl;
 mod types;
 mod memory;
-const MAX_RETRIES: u32 = 1;
-const RETRY_TIMEOUT: Duration = Duration::from_millis(250);
+const MAX_RETRIES: u32 = 120;
+const RETRY_TIMEOUT: Duration = Duration::from_millis(16);
 struct Server {
     socket: UdpSocket,
     player_to_addr: [Option<SocketAddr>; (u8::MAX as usize) + 1],
@@ -202,7 +202,7 @@ impl Server {
                     for addr in addresses {
                         // insert these unack messages for each target, such that when the target sends an ack for these sequence numbers we know
                         if let Some(inp_buffer) = self.unack_input_buffer.get_mut(&addr) {
-                            inp_buffer.insert_player_input(inputs.clone());
+                            inp_buffer.bulk_insert_player_input(inputs.clone());
                             if
                                 let Some(seq_num_to_frame) =
                                     self.unack_input_seq_nums_to_frame.get_mut(&addr)
