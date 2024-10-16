@@ -9,7 +9,8 @@ use crate::types::{
     NetworkLogger,
     NetworkMessage,
     NetworkMessageType,
-    NetworkedPlayerInputs,
+    NetworkedPlayerInput,
+    BufferedNetworkedPlayerInputs,
     PacketParser,
     PlayerID,
     PlayerInput,
@@ -22,8 +23,8 @@ use crate::types::{
     BASE_CHUNK_SEQ_NUM_BYTE_POS,
     DATA_BIT_START_POS,
     DISCRIMINANT_BIT_START_POS,
+    MAX_UDP_PAYLOAD_DATA_LENGTH,
     MAX_UDP_PAYLOAD_LEN,
-    PAYLOAD_DATA_LENGTH,
     PLAYER_MOVE_LEFT_BYTE_POS,
     PLAYER_MOVE_RIGHT_BYTE_POS,
     PLAYER_SHOOT_BYTE_POS,
@@ -54,7 +55,7 @@ impl PacketParser {
         header: &MessageHeader,
         data: &[u8]
     ) -> Result<DeserializedMessage, &'static str> {
-        debug_assert!(data.len() % PAYLOAD_DATA_LENGTH == 0, "data.len {}", data.len()); // either its 1 packet or its multiple packets of this size
+        debug_assert!(data.len() % MAX_UDP_PAYLOAD_DATA_LENGTH == 0, "data.len {}", data.len()); // either its 1 packet or its multiple packets of this size
         // HEADER IS REMOVED from data; ONLY DATA HERE
         let parsed_message = match header.message {
             | NetworkMessage::GetServerPlayerIDs
@@ -63,20 +64,32 @@ impl PacketParser {
 
             NetworkMessage::ClientSentWorld(_) => NetworkMessage::ClientSentWorld(data.to_vec()),
 
-            NetworkMessage::ClientSentPlayerInputs(_) => {
-                let frame = u32::from_le_bytes(data[0..4].try_into().unwrap());
-                let player_inputs = parse_player_inputs(data[4]);
-                NetworkMessage::ClientSentPlayerInputs(
-                    NetworkedPlayerInputs::new(player_inputs, frame)
-                )
+            | NetworkMessage::ClientSentPlayerInputs(_)
+            | NetworkMessage::ServerSentPlayerInputs(_) => {
+                let mut buffered_inputs = BufferedNetworkedPlayerInputs::default();
+                let mut offset = 1; // Start after the first byte, which is the length of the Vec
+                let input_count = data[0] as usize;
+                for _ in 0..input_count {
+                    let frame = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
+                    offset += 4;
+                    let player_inputs = parse_player_inputs(data[offset]);
+                    offset += 1;
+                    buffered_inputs.buffered_inputs.push(NetworkedPlayerInput {
+                        inputs: player_inputs,
+                        frame,
+                    });
+                }
+                match header.message {
+                    NetworkMessage::ClientSentPlayerInputs(_) => {
+                        NetworkMessage::ClientSentPlayerInputs(buffered_inputs)
+                    }
+                    NetworkMessage::ServerSentPlayerInputs(_) => {
+                        NetworkMessage::ServerSentPlayerInputs(buffered_inputs)
+                    }
+                    _ => { panic!() }
+                }
             }
-            NetworkMessage::ServerSentPlayerInputs(_) => {
-                let frame = u32::from_le_bytes(data[0..4].try_into().unwrap());
-                let player_inputs = parse_player_inputs(data[4]);
-                NetworkMessage::ServerSentPlayerInputs(
-                    NetworkedPlayerInputs::new(player_inputs, frame)
-                )
-            }
+
             NetworkMessage::ClientConnectToOtherWorld(_) => {
                 NetworkMessage::ClientConnectToOtherWorld(ServerPlayerID(data[0]))
             }
@@ -234,7 +247,8 @@ impl NetworkMessage {
         data: &Vec<u8>,
         msg_type: NetworkMessageType
     ) -> SerializedMessageType {
-        let amt_of_chunks = (data.len() + PAYLOAD_DATA_LENGTH - 1) / PAYLOAD_DATA_LENGTH;
+        let amt_of_chunks =
+            (data.len() + MAX_UDP_PAYLOAD_DATA_LENGTH - 1) / MAX_UDP_PAYLOAD_DATA_LENGTH;
         debug_assert!(amt_of_chunks < (u8::MAX as usize), "{}", amt_of_chunks);
         let mut byte_chunks: Vec<Vec<u8>> = Vec::new();
         let mut rng = rand::thread_rng();
@@ -242,7 +256,7 @@ impl NetworkMessage {
         for i in 0..amt_of_chunks {
             let mut msg_bytes = Vec::new();
             match msg_type {
-                NetworkMessageType::Reliable(seq_num) => {
+                NetworkMessageType::ResendUntilAck(seq_num) => {
                     msg_bytes.extend(random_bytes.clone());
                     msg_bytes.push(1); // true
                     msg_bytes.push(seq_num.0.wrapping_add(i as u8));
@@ -256,12 +270,18 @@ impl NetworkMessage {
                     debug_assert!(msg_bytes[AMT_OF_CHUNKS_BYTE_POS] == (amt_of_chunks as u8));
                     debug_assert!(msg_bytes[DISCRIMINANT_BIT_START_POS] == discriminator_byte);
                 }
-                NetworkMessageType::Unreliable => {
+                NetworkMessageType::SendOnce | NetworkMessageType::SendOnceButReceiveAck(_) => {
                     panic!("Cannot send chunked message unreliable");
                 }
             }
             msg_bytes.extend(
-                &data[i * PAYLOAD_DATA_LENGTH..((i + 1) * PAYLOAD_DATA_LENGTH).min(data.len())]
+                &data
+                    [
+                        i * MAX_UDP_PAYLOAD_DATA_LENGTH..(
+                            (i + 1) *
+                            MAX_UDP_PAYLOAD_DATA_LENGTH
+                        ).min(data.len())
+                    ]
             );
             byte_chunks.push(msg_bytes);
         }
@@ -291,13 +311,14 @@ impl NetworkMessage {
         let random_bytes: Vec<u8> = (0..AMT_RANDOM_BYTES).map(|_| rng.gen()).collect(); // First few random bytes (3 bytes in this example)
         bytes.extend(random_bytes);
         match msg_type {
-            NetworkMessageType::Reliable(seq_num) => {
+            | NetworkMessageType::ResendUntilAck(seq_num)
+            | NetworkMessageType::SendOnceButReceiveAck(seq_num) => {
                 bytes.push(1); // true
                 bytes.push(seq_num.0);
                 debug_assert!(bytes[RELIABLE_FLAG_BYTE_POS] == 1);
                 debug_assert!(bytes[SEQ_NUM_BYTE_POS] == seq_num.0);
             }
-            NetworkMessageType::Unreliable => {
+            NetworkMessageType::SendOnce => {
                 bytes.push(0);
                 bytes.push(0);
                 debug_assert!(bytes[RELIABLE_FLAG_BYTE_POS] == 0);
@@ -316,7 +337,7 @@ impl NetworkMessage {
                     }
                     _ => { panic!() }
                 };
-                if sim.len() > PAYLOAD_DATA_LENGTH {
+                if sim.len() > MAX_UDP_PAYLOAD_DATA_LENGTH {
                     println!("chunking message");
                     return self.chunk_message(discriminator, &sim, msg_type);
                 } else {
@@ -332,18 +353,25 @@ impl NetworkMessage {
                 Self::push_non_chunked(&mut bytes);
                 let message = match *self {
                     Self::ClientSentPlayerInputs(_) => {
-                        NetworkMessage::ClientSentPlayerInputs(NetworkedPlayerInputs::placeholder())
+                        NetworkMessage::ClientSentPlayerInputs(
+                            BufferedNetworkedPlayerInputs::default()
+                        )
                     }
                     Self::ServerSentPlayerInputs(_) => {
-                        NetworkMessage::ServerSentPlayerInputs(NetworkedPlayerInputs::placeholder())
+                        NetworkMessage::ServerSentPlayerInputs(
+                            BufferedNetworkedPlayerInputs::default()
+                        )
                     }
                     _ => { panic!() }
                 };
                 bytes.push(message.into());
-                let packed_inputs = Self::pack_player_inputs(&inp.inputs);
-                bytes.extend_from_slice(&inp.frame.to_le_bytes());
-                bytes.push(packed_inputs);
-
+                bytes.push(inp.buffered_inputs.len() as u8);
+                for input in &inp.buffered_inputs {
+                    let packed_inputs = Self::pack_player_inputs(&input.inputs);
+                    bytes.extend_from_slice(&input.frame.to_le_bytes());
+                    bytes.push(packed_inputs);
+                }
+                debug_assert!(bytes.len() <= MAX_UDP_PAYLOAD_LEN);
                 SerializedMessageType::from_serialized_msg(SerializedNetworkMessage {
                     bytes,
                 })
@@ -457,13 +485,19 @@ impl TryFrom<u8> for NetworkMessage {
             1 => Ok(NetworkMessage::GetOwnServerPlayerID),
 
             2 => Ok(NetworkMessage::ClientSentWorld(Vec::new())),
-            3 => Ok(NetworkMessage::ClientSentPlayerInputs(NetworkedPlayerInputs::placeholder())),
+            3 =>
+                Ok(
+                    NetworkMessage::ClientSentPlayerInputs(BufferedNetworkedPlayerInputs::default())
+                ),
 
             4 => Ok(NetworkMessage::ServerSideAck(SeqNum(0))),
             5 => Ok(NetworkMessage::ClientSideAck(SeqNum(0))),
 
             6 => Ok(NetworkMessage::ServerSentPlayerIDs(Vec::new())),
-            7 => Ok(NetworkMessage::ServerSentPlayerInputs(NetworkedPlayerInputs::placeholder())),
+            7 =>
+                Ok(
+                    NetworkMessage::ServerSentPlayerInputs(BufferedNetworkedPlayerInputs::default())
+                ),
             8 => Ok(NetworkMessage::ServerSentWorld(Vec::new())),
             9 => Ok(NetworkMessage::ClientConnectToOtherWorld(ServerPlayerID(0))),
             10 => Ok(NetworkMessage::ServerRequestHostForWorldData),
@@ -566,15 +600,15 @@ impl NetworkLogger {
     }
 }
 
-impl NetworkedPlayerInputs {
+impl NetworkedPlayerInput {
     pub fn new(inputs: Vec<PlayerInput>, frame: u32) -> Self {
-        NetworkedPlayerInputs {
+        NetworkedPlayerInput {
             inputs,
             frame,
         }
     }
     pub fn placeholder() -> Self {
-        NetworkedPlayerInputs {
+        NetworkedPlayerInput {
             inputs: Vec::new(),
             frame: 0,
         }
@@ -588,5 +622,42 @@ impl PlayerID {
             1 => Some(PlayerID::Player2),
             _ => None,
         }
+    }
+}
+
+impl BufferedNetworkedPlayerInputs {
+    pub fn default() -> Self {
+        BufferedNetworkedPlayerInputs {
+            buffered_inputs: Vec::new(),
+        }
+    }
+    pub fn insert_player_input(&mut self, other: BufferedNetworkedPlayerInputs) {
+        for networked_input in other.buffered_inputs {
+            if
+                let None = self.buffered_inputs
+                    .iter_mut()
+                    .find(|i| i.frame == networked_input.frame)
+            {
+                // Insert new NetworkedPlayerInput if frame doesn't exist
+                self.buffered_inputs.push(networked_input);
+            }
+        }
+        debug_assert!(
+            self.buffered_inputs.iter().all(|input| {
+                self.buffered_inputs
+                    .iter()
+                    .filter(|other_inp| **other_inp == *input)
+                    .count() == 1
+            })
+        );
+    }
+
+    pub fn discard_acknowledged_frames(&mut self, frame: u32) {
+        self.buffered_inputs.retain(|input| input.frame >= frame);
+
+        debug_assert!(
+            self.buffered_inputs.iter().all(|input| input.frame >= frame),
+            "There are frames that are less than the acknowledged frame"
+        );
     }
 }

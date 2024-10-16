@@ -1,11 +1,13 @@
+use core::panic;
 use std::{
-    collections::HashMap,
+    collections::{ HashMap, HashSet },
     net::UdpSocket,
     sync::{ mpsc, Arc, Mutex },
     thread,
     time::{ Duration, Instant },
 };
 
+use rand::seq;
 #[cfg(feature = "simulation_mode")]
 use simulation::{ PACKET_LOSS_PERCENTAGE, rng_gen_range };
 #[cfg(feature = "simulation_mode")]
@@ -21,17 +23,23 @@ mod simulation {
 }
 const LOGGER: NetworkLogger = NetworkLogger { log: false };
 use crate::types::{
+    BufferedNetworkedPlayerInputs,
     ChunkedMessageCollector,
     DeserializedMessage,
+    GameMessage,
+    GameRequestToNetwork,
     MsgBuffer,
     NetworkLogger,
     NetworkMessage,
     NetworkMessageType,
-    NetworkedPlayerInputs,
+    NetworkedPlayerInput,
     PlayerInput,
+    SendInputsError,
     SeqNum,
     SerializedNetworkMessage,
     ServerPlayerID,
+    MAX_UDP_PAYLOAD_DATA_LENGTH,
+    MAX_UDP_PAYLOAD_LEN,
     SEQ_NUM_BYTE_POS,
 };
 
@@ -42,19 +50,21 @@ pub struct ConnectionServer {
     sequence_number: u8,
     pending_acks: HashMap<SeqNum, (Instant, SerializedNetworkMessage)>,
     server_msg_sender: mpsc::Sender<NetworkMessage>,
-    client_request_receiver: mpsc::Receiver<NetworkMessage>,
+    client_request_receiver: mpsc::Receiver<GameRequestToNetwork>,
     ack_sender: mpsc::Sender<SeqNum>,
     ack_receiver: mpsc::Receiver<SeqNum>,
     network_msg_receiver: mpsc::Receiver<NetworkMessage>,
     network_msg_sender: mpsc::Sender<NetworkMessage>,
     chunked_msg_collector: Arc<Mutex<ChunkedMessageCollector>>,
+    unack_input_buffer: BufferedNetworkedPlayerInputs,
+    unack_input_seq_nums_to_frame: HashMap<SeqNum, u32>, // Hashmaps from seq_num to u32 could also be rewritten as vecs / depending on seq_num_size as static arrays
 }
 
 impl ConnectionServer {
     pub fn new() -> Result<
         (
             Arc<Mutex<ConnectionServer>>,
-            mpsc::Sender<NetworkMessage>,
+            mpsc::Sender<GameRequestToNetwork>,
             mpsc::Receiver<NetworkMessage>,
         ),
         std::io::Error
@@ -78,15 +88,18 @@ impl ConnectionServer {
                 network_msg_sender,
                 network_msg_receiver,
                 chunked_msg_collector: Arc::new(Mutex::new(ChunkedMessageCollector::default())),
+                unack_input_buffer: BufferedNetworkedPlayerInputs {
+                    buffered_inputs: Vec::new(),
+                },
+                unack_input_seq_nums_to_frame: HashMap::new(),
             })
         );
 
         Ok((connection_server, request_sender, response_receiver))
     }
     pub fn start(server: Arc<Mutex<ConnectionServer>>) {
-        let server_clone = Arc::clone(&server);
         thread::spawn(move || {
-            server_clone.lock().unwrap().run();
+            server.lock().unwrap().run();
         });
     }
 
@@ -104,6 +117,10 @@ impl ConnectionServer {
                         if let Ok(request) = buffer.parse_on_client() {
                             match request {
                                 crate::types::DeserializedMessageType::NonChunked(request) => {
+                                    debug_assert!(
+                                        (request.seq_num.is_some() && request.reliable) ||
+                                            (!request.reliable && request.seq_num.is_none())
+                                    );
                                     if let Some(seq_num) = request.seq_num {
                                         let _ = ack_sender.send(SeqNum(seq_num));
                                     }
@@ -145,9 +162,9 @@ impl ConnectionServer {
                             NetworkMessage::ServerSentPlayerInputs(inputs)
                         );
                     }
-                    NetworkMessage::ServerSideAck(type_of_ack) => {
-                        self.pending_acks.remove(&type_of_ack);
-                        LOGGER.log_received_ack(type_of_ack.0);
+                    NetworkMessage::ServerSideAck(acked_seq_num) => {
+                        self.handle_ack(acked_seq_num);
+                        LOGGER.log_received_ack(acked_seq_num.0);
                     }
                     NetworkMessage::ServerSentPlayerIDs(ids) => {
                         let _ = self.server_msg_sender.send(
@@ -165,34 +182,46 @@ impl ConnectionServer {
             match self.client_request_receiver.try_recv() {
                 Ok(request) => {
                     match request {
-                        NetworkMessage::GetOwnServerPlayerID => {
-                            todo!();
-                        }
-                        NetworkMessage::GetServerPlayerIDs => {
-                            if let Err(e) = self.get_available_player_worlds() {
-                                eprintln!("Error getting available player worlds: {}", e);
+                        GameRequestToNetwork::DirectRequest(network_msg) => {
+                            match network_msg {
+                                NetworkMessage::GetOwnServerPlayerID => {
+                                    todo!();
+                                }
+                                NetworkMessage::GetServerPlayerIDs => {
+                                    if let Err(e) = self.get_available_player_worlds() {
+                                        eprintln!("Error getting available player worlds: {}", e);
+                                    }
+                                }
+                                NetworkMessage::ClientSentWorld(sim_mem) => {
+                                    if let Err(e) = self.send_player_world_state(sim_mem) {
+                                        eprintln!("Error sending player world state: {}", e);
+                                    }
+                                }
+
+                                NetworkMessage::ClientConnectToOtherWorld(id) => {
+                                    if let Err(e) = self.connect_to_other_world(id) {
+                                        eprintln!("Error connecting to other world: {}", e);
+                                    }
+                                }
+                                NetworkMessage::ClientSentPlayerInputs(_) => {
+                                    panic!(
+                                        "Client cannot send buffered inputs, network takes caree of this"
+                                    );
+                                }
+                                _ => {
+                                    panic!(
+                                        "Tried to run server side NetworkMessage on client {:?}",
+                                        network_msg
+                                    );
+                                }
                             }
                         }
-                        NetworkMessage::ClientSentWorld(sim_mem) => {
-                            if let Err(e) = self.send_player_world_state(sim_mem) {
-                                eprintln!("Error sending player world state: {}", e);
+                        GameRequestToNetwork::IndirectRequest(game_msg) => {
+                            match game_msg {
+                                GameMessage::ClientSentPlayerInputs(inp) => {
+                                    self.send_player_inputs(inp);
+                                }
                             }
-                        }
-                        NetworkMessage::ClientSentPlayerInputs(inputs) => {
-                            if let Err(e) = self.send_player_inputs(inputs) {
-                                eprintln!("Error sending player inputs: {}", e);
-                            }
-                        }
-                        NetworkMessage::ClientConnectToOtherWorld(id) => {
-                            if let Err(e) = self.connect_to_other_world(id) {
-                                eprintln!("Error connecting to other world: {}", e);
-                            }
-                        }
-                        _ => {
-                            panic!(
-                                "Tried to run server side NetworkMessage on client {:?}",
-                                request
-                            );
                         }
                     }
                 }
@@ -210,29 +239,32 @@ impl ConnectionServer {
 
         receive_thread.join().unwrap();
     }
-    pub fn send_unreliable(&self, request: &NetworkMessage) -> Result<(), std::io::Error> {
-        let serialized_message = request.serialize(crate::types::NetworkMessageType::Unreliable);
-        #[cfg(feature = "simulation_mode")]
-        {
-            if rng_gen_range(0.0..100.0) < PACKET_LOSS_PERCENTAGE {
-                LOGGER.log_simulated_packet_loss(self.sequence_number);
-                return Ok(());
-            }
-        }
-        match serialized_message {
-            crate::types::SerializedMessageType::NonChunked(serialized_message) => {
-                self.socket.send(&serialized_message.bytes)?;
-                Ok(())
-            }
-            crate::types::SerializedMessageType::Chunked(_) => {
-                panic!("Cannot send unreliable in chunks rn");
-            }
-        }
+    pub fn handle_ack(&mut self, acked_seq_num: SeqNum) {
+        self.pending_acks.remove(&acked_seq_num);
     }
+    // pub fn send_unreliable(&self, request: &NetworkMessage) -> Result<(), std::io::Error> {
+    //     let serialized_message = request.serialize(crate::types::NetworkMessageType::SendOnce);
+    //     #[cfg(feature = "simulation_mode")]
+    //     {
+    //         if rng_gen_range(0.0..100.0) < PACKET_LOSS_PERCENTAGE {
+    //             LOGGER.log_simulated_packet_loss(self.sequence_number);
+    //             return Ok(());
+    //         }
+    //     }
+    //     match serialized_message {
+    //         crate::types::SerializedMessageType::NonChunked(serialized_message) => {
+    //             self.socket.send(&serialized_message.bytes)?;
+    //             Ok(())
+    //         }
+    //         crate::types::SerializedMessageType::Chunked(_) => {
+    //             panic!("Cannot send unreliable in chunks rn");
+    //         }
+    //     }
+    // }
 
     pub fn send_reliable(&mut self, request: &NetworkMessage) -> Result<(), std::io::Error> {
         let serialized_message = request.serialize(
-            crate::types::NetworkMessageType::Reliable(SeqNum(self.sequence_number))
+            crate::types::NetworkMessageType::ResendUntilAck(SeqNum(self.sequence_number))
         );
         match serialized_message {
             crate::types::SerializedMessageType::Chunked(chunks) => {
@@ -285,9 +317,10 @@ impl ConnectionServer {
     }
 
     fn send_ack(&self, seq_num: SeqNum) {
-        let ack_message = NetworkMessage::ClientSideAck(seq_num);
-        let serialized_msg = ack_message.serialize(NetworkMessageType::Unreliable);
-        match serialized_msg {
+        let ack_message = NetworkMessage::ClientSideAck(seq_num).serialize(
+            NetworkMessageType::ResendUntilAck(seq_num)
+        );
+        match ack_message {
             crate::types::SerializedMessageType::NonChunked(serialized_msg) => {
                 if let Err(e) = self.socket.send(&serialized_msg.bytes) {
                     eprintln!("Failed to send ACK to server: {}", e);
@@ -297,11 +330,6 @@ impl ConnectionServer {
                 panic!("ack shouldnt be chunked");
             }
         }
-    }
-    fn handle_ack(&mut self, type_of_ack: SeqNum) {
-        LOGGER.log_received_ack(type_of_ack.0);
-        self.pending_acks.remove(&type_of_ack);
-        LOGGER.log_pending_acks(self.pending_acks.keys().cloned().collect());
     }
     fn handle_retransmissions(&mut self) {
         let now = Instant::now();
@@ -342,8 +370,41 @@ impl ConnectionServer {
         let request = NetworkMessage::ClientConnectToOtherWorld(id);
         self.send_reliable(&request)
     }
-    fn send_player_inputs(&mut self, inputs: NetworkedPlayerInputs) -> Result<(), std::io::Error> {
-        let request = NetworkMessage::ClientSentPlayerInputs(inputs);
-        self.send_unreliable(&request)
+    fn send_player_inputs(&mut self, inputs: NetworkedPlayerInput) -> Result<(), SendInputsError> {
+        // let request = NetworkMessage::ClientSentPlayerInputs(inputs);
+        // if they have the same length then we couldnt send inputs for multiple seconds, so we stop sending and disconnect
+        if
+            self.unack_input_buffer.buffered_inputs.len() * 5 < MAX_UDP_PAYLOAD_DATA_LENGTH - 1 // 5 bytes 4 for frame, 1 for input, and 1 start bit for length of vec
+        {
+            return Err(SendInputsError::Disconnected);
+        }
+        self.unack_input_buffer.buffered_inputs.push(inputs.clone());
+        self.unack_input_seq_nums_to_frame.insert(SeqNum(self.sequence_number), inputs.frame);
+
+        let request = NetworkMessage::ClientSentPlayerInputs(
+            self.unack_input_buffer.clone()
+        ).serialize(NetworkMessageType::SendOnceButReceiveAck(SeqNum(self.sequence_number)));
+
+        #[cfg(feature = "simulation_mode")]
+        {
+            if rng_gen_range(0.0..100.0) < PACKET_LOSS_PERCENTAGE {
+                LOGGER.log_simulated_packet_loss(self.sequence_number);
+                return Ok(());
+            }
+        }
+        match request {
+            crate::types::SerializedMessageType::NonChunked(request) => {
+                let res = self.socket.send(&request.bytes);
+                match res {
+                    Ok(_) => {
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        return Err(SendInputsError::IO(e));
+                    }
+                }
+            }
+            _ => panic!("Invalid type for send inputs request"),
+        }
     }
 }

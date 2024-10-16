@@ -12,6 +12,7 @@ use types::{
     DeserializedMessageType,
     MsgBuffer,
     NetworkMessage,
+    BufferedNetworkedPlayerInputs,
     SeqNum,
     SerializedMessageType,
     SerializedNetworkMessage,
@@ -32,6 +33,8 @@ struct Server {
     msg_buffer: MsgBuffer,
     pending_acks: HashMap<SocketAddr, HashMap<SeqNum, (Instant, SerializedNetworkMessage)>>,
     sequence_number: u8,
+    unack_input_seq_nums_to_frame: HashMap<SocketAddr, HashMap<SeqNum, u32>>,
+    unack_input_buffer: HashMap<SocketAddr, BufferedNetworkedPlayerInputs>,
 }
 
 impl Server {
@@ -48,6 +51,8 @@ impl Server {
             msg_buffer,
             pending_acks: HashMap::new(),
             sequence_number: 0,
+            unack_input_buffer: HashMap::new(),
+            unack_input_seq_nums_to_frame: HashMap::new(),
         }
     }
 
@@ -146,6 +151,10 @@ impl Server {
         self.player_to_addr[new_id.0 as usize] = Some(*addr);
         self.pending_acks.insert(*addr, HashMap::new());
         self.pending_chunked_msgs.insert(*addr, ChunkedMessageCollector::default());
+        self.unack_input_buffer.insert(*addr, BufferedNetworkedPlayerInputs {
+            buffered_inputs: Vec::new(),
+        });
+        self.unack_input_seq_nums_to_frame.insert(*addr, HashMap::new());
     }
     pub fn create_player_conn_from_to_host(
         &mut self,
@@ -154,7 +163,10 @@ impl Server {
     ) {
         self.connections.entry(player1_addr).or_insert_with(Vec::new).push(player2_addr);
         self.connections.entry(player2_addr).or_insert_with(Vec::new).push(player1_addr);
-        self.send_reliable(NetworkMessage::ServerRequestHostForWorldData, &player2_addr);
+        self.send_and_resend_until_ack(
+            NetworkMessage::ServerRequestHostForWorldData,
+            &player2_addr
+        );
     }
 
     pub fn handle_message(&mut self, msg: DeserializedMessage, src: &SocketAddr) {
@@ -170,10 +182,67 @@ impl Server {
         if let Some(connections) = self.connections.get(src) {
             let addresses: Vec<_> = connections.clone();
             for addr in addresses {
-                self.send_reliable(msg.clone(), &addr);
+                self.send_and_resend_until_ack(msg.clone(), &addr);
+                // todo this function shouldnt be called like this, it should be called once because not every client needs a different seq number
+            } // every client alrdy has separate data due to hashmap socketaddr -> any information, so we can use the same seq num like below
+        }
+    }
+    fn broadcast_inputs(&mut self, inputs: &BufferedNetworkedPlayerInputs, src: &SocketAddr) {
+        let seq_num = SeqNum(self.sequence_number); // TODO refactor to not be able to use sequence number without increasing after
+        self.sequence_number.wrapping_add(1);
+
+        if let Some(inp_buffer) = self.unack_input_buffer.get_mut(src) {
+            inp_buffer.insert_player_input(inputs.clone());
+            if let Some(seq_num_to_frame) = self.unack_input_seq_nums_to_frame.get_mut(src) {
+                seq_num_to_frame.insert(
+                    seq_num,
+                    inp_buffer.buffered_inputs
+                        .last()
+                        .expect("If we send sth it shouldnt be empty").frame
+                );
+            } else {
+                println!(
+                    "BUG seq_num_to_frame should always exist for a connection when inp buffer exists"
+                );
+            }
+        } else {
+            println!(
+                "Unack input buffer doesn't exist for client, either he timed out or code is buggy"
+            );
+        }
+
+        if let Some(connections) = self.connections.get(src) {
+            let addresses: Vec<_> = connections.clone();
+            let msg = NetworkMessage::ServerSentPlayerInputs(inputs.clone()).serialize(
+                types::NetworkMessageType::SendOnceButReceiveAck(seq_num)
+            );
+            self.sequence_number.wrapping_add(1);
+            match msg {
+                SerializedMessageType::NonChunked(msg) => {
+                    for addr in addresses {
+                        self.socket.send_to(&msg.bytes, addr);
+                    }
+                }
+                SerializedMessageType::Chunked(_) => panic!("Inputs should never be chunked"),
             }
         }
     }
+    fn handle_player_input_ack(&mut self, seq_num: SeqNum, src: &SocketAddr) {
+        if let Some(inp_buffer) = self.unack_input_buffer.get_mut(src) {
+            if
+                let Some(frame) = self.unack_input_seq_nums_to_frame
+                    .get_mut(src)
+                    .and_then(|seq_num_to_frame| seq_num_to_frame.remove(&seq_num))
+            {
+                inp_buffer.discard_acknowledged_frames(frame);
+            } else {
+                println!("BUG: seq_num_to_frame should always exist when inp buffer exists");
+            }
+        } else {
+            println!("Unack input buffer missing for client, possibly timeout or bug");
+        }
+    }
+    // fn send_bulk_until_ack(&mut self, msg. )
     fn process_message(&mut self, msg: NetworkMessage, src: &SocketAddr) {
         match msg {
             NetworkMessage::ClientSentWorld(data) => {
@@ -184,7 +253,7 @@ impl Server {
             NetworkMessage::ClientSentPlayerInputs(inputs) => {
                 // RELAY INPUTS
                 // println!("Processing player inputs from {:?}: {:?}", src, inputs);
-                self.broadcast_reliable(NetworkMessage::ServerSentPlayerInputs(inputs), src);
+                self.broadcast_inputs(&inputs, src);
             }
             NetworkMessage::GetServerPlayerIDs => {
                 // println!("Request for player IDS");
@@ -195,10 +264,13 @@ impl Server {
                     })
                     .collect();
                 // println!("sent player ids {:?}", player_ids);
-                self.send_reliable(NetworkMessage::ServerSentPlayerIDs(player_ids), src);
+                self.send_and_resend_until_ack(
+                    NetworkMessage::ServerSentPlayerIDs(player_ids),
+                    src
+                );
             }
             NetworkMessage::ClientSideAck(seq_num) => {
-                self.handle_ack(seq_num, src);
+                self.handle_clients_ack(seq_num, src);
             }
             NetworkMessage::ClientConnectToOtherWorld(id) => {
                 debug_assert!(id.0 != self.addr_to_player.get(src).unwrap().0);
@@ -218,7 +290,8 @@ impl Server {
             // Add other message types as needed
         }
     }
-    pub fn handle_ack(&mut self, seq_num: SeqNum, src: &SocketAddr) {
+    pub fn handle_clients_ack(&mut self, seq_num: SeqNum, src: &SocketAddr) {
+        self.handle_player_input_ack(seq_num, src);
         if let Some(pending_messages) = self.pending_acks.get_mut(src) {
             if pending_messages.remove(&seq_num).is_some() {
                 // println!("Acknowledged message {:?} from client {:?}", seq_num, src);
@@ -235,7 +308,7 @@ impl Server {
     }
     fn send_ack(&mut self, seq_num: SeqNum, dst: &SocketAddr) {
         let serialized_msg = NetworkMessage::ServerSideAck(seq_num).serialize(
-            types::NetworkMessageType::Unreliable
+            types::NetworkMessageType::SendOnce
         );
         match serialized_msg {
             SerializedMessageType::Chunked(_) => {
@@ -248,11 +321,12 @@ impl Server {
             }
         }
     }
-    pub fn send_reliable(&mut self, msg: NetworkMessage, dst: &SocketAddr) {
+
+    pub fn send_and_resend_until_ack(&mut self, msg: NetworkMessage, dst: &SocketAddr) {
         let seq_num = SeqNum(self.sequence_number);
         //println!("trying to send message x to client {:?}", msg);
 
-        let serialized_msg = msg.serialize(types::NetworkMessageType::Reliable(seq_num));
+        let serialized_msg = msg.serialize(types::NetworkMessageType::ResendUntilAck(seq_num));
         match serialized_msg {
             SerializedMessageType::Chunked(chunks) => {
                 for msg in chunks.bytes {
@@ -284,18 +358,6 @@ impl Server {
                 self.sequence_number = self.sequence_number.wrapping_add(1);
                 if let Err(e) = self.socket.send_to(&serialized_msg.bytes, dst) {
                     eprintln!("Failed to send reliable message to {:?}: {}", dst, e);
-                }
-            }
-        }
-    }
-
-    pub fn send_unreliable(&self, msg: NetworkMessage, dst: &SocketAddr) {
-        let serialized_msg = msg.serialize(types::NetworkMessageType::Unreliable);
-        match serialized_msg {
-            SerializedMessageType::Chunked(chunks) => {}
-            SerializedMessageType::NonChunked(serialized_msg) => {
-                if let Err(e) = self.socket.send_to(&serialized_msg.bytes, dst) {
-                    eprintln!("Failed to send unreliable message to {:?}: {}", dst, e);
                 }
             }
         }

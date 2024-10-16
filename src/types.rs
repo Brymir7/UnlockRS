@@ -1,7 +1,7 @@
 use macroquad::{ color::Color, math::Vec2 };
 use crate::memory::FixedDataPtr;
 pub const MAX_UDP_PAYLOAD_LEN: usize = 508; // https://stackoverflow.com/questions/1098897/what-is-the-largest-safe-udp-packet-size-on-the-internet
-pub const PAYLOAD_DATA_LENGTH: usize = MAX_UDP_PAYLOAD_LEN - DATA_BIT_START_POS;
+pub const MAX_UDP_PAYLOAD_DATA_LENGTH: usize = MAX_UDP_PAYLOAD_LEN - DATA_BIT_START_POS;
 pub const MAX_BULLETS: usize = 5;
 pub const MAX_ENEMIES: usize = 20;
 pub const AMT_RANDOM_BYTES: usize = 1;
@@ -56,7 +56,7 @@ pub struct SimulationDataRef<'a> {
     enemies: &'a [Enemy; MAX_ENEMIES],
     spawn_timer: &'a f64,
 }
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PlayerInput {
     Left,
     Right,
@@ -71,11 +71,16 @@ pub enum PlayerID {
 #[derive(Debug, Copy, Clone)]
 pub struct ServerPlayerID(pub u8);
 
-#[derive(Debug, Clone)]
-pub struct NetworkedPlayerInputs {
+#[derive(Debug, Clone, PartialEq)]
+pub struct NetworkedPlayerInput {
     pub inputs: Vec<PlayerInput>,
     pub frame: u32,
 }
+#[derive(Debug, Clone)]
+pub struct BufferedNetworkedPlayerInputs {
+    pub buffered_inputs: Vec<NetworkedPlayerInput>,
+}
+
 #[repr(u8)]
 #[derive(Debug, Clone)]
 pub enum NetworkMessage {
@@ -83,23 +88,31 @@ pub enum NetworkMessage {
     GetOwnServerPlayerID = 1,
 
     ClientSentWorld(Vec<u8>) = 2,
-    ClientSentPlayerInputs(NetworkedPlayerInputs) = 3,
+    ClientSentPlayerInputs(BufferedNetworkedPlayerInputs) = 3,
 
     ServerSideAck(SeqNum) = 4,
     ClientSideAck(SeqNum) = 5,
 
     ServerSentPlayerIDs(Vec<u8>) = 6,
-    ServerSentPlayerInputs(NetworkedPlayerInputs) = 7,
+    ServerSentPlayerInputs(BufferedNetworkedPlayerInputs) = 7,
     ServerSentWorld(Vec<u8>) = 8,
 
     ClientConnectToOtherWorld(ServerPlayerID) = 9,
     ServerRequestHostForWorldData = 10,
 }
+pub enum GameMessage {
+    ClientSentPlayerInputs(NetworkedPlayerInput)
+}
+pub enum GameRequestToNetwork {
+    DirectRequest(NetworkMessage),
+    IndirectRequest(GameMessage),
+}
 #[derive(Eq, Hash, PartialEq, Debug, Clone, Copy)]
 pub struct SeqNum(pub u8);
 pub enum NetworkMessageType {
-    Reliable(SeqNum),
-    Unreliable,
+    ResendUntilAck(SeqNum),
+    SendOnce,
+    SendOnceButReceiveAck(SeqNum),
 }
 #[derive(Debug)]
 pub struct DeserializedMessage {
@@ -159,4 +172,9 @@ pub struct PacketParser;
 
 pub struct NetworkLogger {
     pub log: bool,
+}
+
+pub enum SendInputsError {
+    Disconnected,
+    IO(std::io::Error),
 }
