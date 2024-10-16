@@ -42,7 +42,6 @@ pub struct InputBuffer {
     last_verified_inputs: [Option<Vec<PlayerInput>>; MAX_PLAYER_COUNT as usize],
     pub player_count: u8,
     local_player: PlayerID,
-    pub curr_verified_frame: u32,
 }
 
 impl InputBuffer {
@@ -52,23 +51,28 @@ impl InputBuffer {
             last_verified_inputs: [None, None],
             player_count: 1,
             local_player: PlayerID::Player1,
-            curr_verified_frame: 0,
         }
     }
-    pub fn update_player_count(&mut self, local_player: PlayerID, player_cnt: u8) {
-        if local_player != self.local_player {
-            for input in &mut self.input_frames {
-                input.inputs = [None, None];
-            }
-            self.local_player = local_player;
-            self.last_verified_inputs = [None, None];
-        }
+    pub fn update_player_count(
+        &mut self,
+        local_player: PlayerID,
+        player_cnt: u8,
+        curr_verified_frame: u32
+    ) {
+        self.input_frames.clear();
+        let mut initial_inputs = PlayerInputs {
+            frame: curr_verified_frame + 1,
+            inputs: [None, None],
+        };
+        initial_inputs.inputs[local_player as usize] = Some(Vec::new());
+        self.input_frames.push_back(initial_inputs);
+        self.local_player = local_player;
+        self.last_verified_inputs = [None, None];
+        println!("updating player count to {:?}", self);
+
         self.player_count = player_cnt;
     }
     pub fn insert_curr_player_inp(&mut self, inp: Vec<PlayerInput>, frame: u32) {
-        if frame < self.curr_verified_frame {
-            return;
-        }
         debug_assert!(frame != 0); // no input can happen before its first drawn
         // frame 0 doesnt exist in arra
         // println!(
@@ -95,14 +99,14 @@ impl InputBuffer {
             );
         }
 
-        debug_assert!(
-            self.input_frames
-                .iter()
-                .take_while(|pi| pi.frame < frame && pi.frame < self.curr_verified_frame)
-                .all(|pi| pi.inputs[self.local_player as usize].is_some()),
-            "Missing input for local player in a frame before the current one || Local player input has to be contigious inp_frame: {:?}",
-            self.input_frames.iter().find(|inp| inp.inputs[self.local_player as usize].is_none())
-        );
+        // debug_assert!(
+        //     self.input_frames
+        //         .iter()
+        //         .take_while(|pi| pi.frame < frame && pi.frame < self.curr_verified_frame)
+        //         .all(|pi| pi.inputs[self.local_player as usize].is_some()),
+        //     "Missing input for local player in a frame before the current one || Local player input has to be contigious inp_frame: {:?}",
+        //     self.input_frames.iter().find(|inp| inp.inputs[self.local_player as usize].is_none())
+        // );
 
         debug_assert!(
             self.input_frames
@@ -116,9 +120,17 @@ impl InputBuffer {
         // );
     }
     pub fn insert_other_player_inp(&mut self, inp: Vec<PlayerInput>, frame: u32) {
-        if frame < self.curr_verified_frame {
-            return;
+        if
+            let Some(input_frame) = self.input_frames
+                .iter()
+                .find(|input_frame| input_frame.inputs[self.local_player as usize].is_some())
+        {
+            if frame < input_frame.frame {
+                println!("tried to insert frame thats before current own player input");
+                return;
+            }
         }
+
         debug_assert!(frame != 0); // no input can happen before its first drawn
         // debug_assert!(other != self.local_player);
         // frame 0 doesnt exist in arra
@@ -165,7 +177,7 @@ impl InputBuffer {
             if front.is_verified(self.player_count) {
                 let res = self.input_frames.pop_front().unwrap();
                 self.last_verified_inputs = res.inputs.clone();
-                self.curr_verified_frame = res.frame;
+
                 return Some(res);
             }
         }
