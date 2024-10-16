@@ -134,7 +134,7 @@ impl Server {
             }
         }
 
-        self.pending_acks.retain(|_, pending_messages| {
+        let _ = self.pending_acks.iter_mut().map(|(_, pending_messages)| {
             pending_messages.retain(|seq, (sent_time, _)| {
                 let resend = now.duration_since(*sent_time) < RETRY_TIMEOUT * MAX_RETRIES;
                 if !resend {
@@ -226,22 +226,18 @@ impl Server {
             }
         }
     }
-    fn handle_player_input_ack(&mut self, seq_num: SeqNum, src: &SocketAddr) -> bool {
+    fn handle_player_input_ack(&mut self, seq_num: SeqNum, src: &SocketAddr) {
         if let Some(inp_buffer) = self.unack_input_buffer.get_mut(src) {
-            if
-                let Some(frame) = self.unack_input_seq_nums_to_frame
-                    .get_mut(src)
-                    .and_then(|seq_num_to_frame| seq_num_to_frame.remove(&seq_num))
-            {
-                inp_buffer.discard_acknowledged_frames(frame);
-                return true;
+            if let Some(seq_num_to_frame) = self.unack_input_seq_nums_to_frame.get_mut(src) {
+                if let Some(frame) = seq_num_to_frame.remove(&seq_num) {
+                    inp_buffer.discard_acknowledged_frames(frame);
+                }
             } else {
                 println!("BUG: seq_num_to_frame should always exist when inp buffer exists");
             }
         } else {
             println!("Unack input buffer missing for client, possibly timeout or bug");
         }
-        return false;
     }
     // fn send_bulk_until_ack(&mut self, msg. )
     fn process_message(&mut self, msg: NetworkMessage, src: &SocketAddr) {
@@ -271,6 +267,8 @@ impl Server {
                 );
             }
             NetworkMessage::ClientSideAck(seq_num) => {
+                todo!("Cannot us sequence number need to use player ID and sequence number or sth like that because otherwise an ????");
+                the client that sends it isnt the one who should also acknowledge te inputs
                 self.handle_clients_ack(seq_num, src);
             }
             NetworkMessage::ClientConnectToOtherWorld(id) => {
@@ -292,21 +290,14 @@ impl Server {
         }
     }
     pub fn handle_clients_ack(&mut self, seq_num: SeqNum, src: &SocketAddr) {
-        let handled = self.handle_player_input_ack(seq_num, src);
-        if handled {
-            return;
-        }
         if let Some(pending_messages) = self.pending_acks.get_mut(src) {
             if pending_messages.remove(&seq_num).is_some() {
                 // println!("Acknowledged message {:?} from client {:?}", seq_num, src);
             } else {
-                println!(
-                    "Received acknowledgment for unknown message {:?} from client {:?}",
-                    seq_num,
-                    src
-                );
+                self.handle_player_input_ack(seq_num, src);
             }
         } else {
+            println!("pending acks {:?}", self.pending_acks);
             println!("Received acknowledgment from unknown client {:?}", src);
         }
     }
