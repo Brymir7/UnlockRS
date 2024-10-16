@@ -239,7 +239,13 @@ impl ConnectionServer {
 
         receive_thread.join().unwrap();
     }
+    pub fn handle_server_input_ack(&mut self, seq_num: SeqNum) {
+        if let Some(frame) = self.unack_input_seq_nums_to_frame.remove(&seq_num) {
+            self.unack_input_buffer.discard_acknowledged_frames(frame);
+        }
+    }
     pub fn handle_ack(&mut self, acked_seq_num: SeqNum) {
+        self.handle_server_input_ack(acked_seq_num);
         self.pending_acks.remove(&acked_seq_num);
     }
     // pub fn send_unreliable(&self, request: &NetworkMessage) -> Result<(), std::io::Error> {
@@ -374,8 +380,11 @@ impl ConnectionServer {
         // let request = NetworkMessage::ClientSentPlayerInputs(inputs);
         // if they have the same length then we couldnt send inputs for multiple seconds, so we stop sending and disconnect
         if
-            self.unack_input_buffer.buffered_inputs.len() * 5 < MAX_UDP_PAYLOAD_DATA_LENGTH - 1 // 5 bytes 4 for frame, 1 for input, and 1 start bit for length of vec
+            (self.unack_input_buffer.buffered_inputs.len() + 1) * 5 >
+            MAX_UDP_PAYLOAD_DATA_LENGTH - 1 // if new input would overflow;  5 bytes 4 for frame, 1 for input, and 1 start bit for length of vec
         {
+            println!("No player to player connection");
+            self.unack_input_buffer.buffered_inputs.clear();
             return Err(SendInputsError::Disconnected);
         }
         self.unack_input_buffer.buffered_inputs.push(inputs.clone());

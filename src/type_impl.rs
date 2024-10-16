@@ -371,7 +371,7 @@ impl NetworkMessage {
                     bytes.extend_from_slice(&input.frame.to_le_bytes());
                     bytes.push(packed_inputs);
                 }
-                debug_assert!(bytes.len() <= MAX_UDP_PAYLOAD_LEN);
+                debug_assert!(bytes.len() <= MAX_UDP_PAYLOAD_LEN, "length {}", bytes.len());
                 SerializedMessageType::from_serialized_msg(SerializedNetworkMessage {
                     bytes,
                 })
