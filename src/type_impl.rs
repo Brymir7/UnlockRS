@@ -675,10 +675,10 @@ impl BufferedNetworkedPlayerInputs {
         //     }
         // }
 
-        self.buffered_inputs.retain(|input| input.frame >= frame);
+        self.buffered_inputs.retain(|input| input.frame > frame);
 
         debug_assert!(
-            self.buffered_inputs.iter().all(|input| input.frame >= frame),
+            self.buffered_inputs.iter().all(|input| input.frame > frame),
             "There are frames that are less than the acknowledged frame"
         );
     }

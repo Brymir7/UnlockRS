@@ -59,17 +59,20 @@ impl InputBuffer {
         player_cnt: u8,
         curr_verified_frame: u32
     ) {
-        self.input_frames.clear();
-        let mut initial_inputs = PlayerInputs {
-            frame: curr_verified_frame + 1,
-            inputs: [None, None],
-        };
-        initial_inputs.inputs[local_player as usize] = Some(Vec::new());
-        self.input_frames.push_back(initial_inputs);
+        if local_player == self.local_player {
+            self.input_frames.clear();
+            let mut initial_inputs = PlayerInputs {
+                frame: curr_verified_frame + 1,
+                inputs: [None, None],
+            };
+            initial_inputs.inputs[local_player as usize] = Some(Vec::new());
+            self.input_frames.push_back(initial_inputs);
+            self.last_verified_inputs = [None, None];
+        } else {
+            self.input_frames.retain(|input_frame| input_frame.frame >= curr_verified_frame + 1);
+        }
         self.local_player = local_player;
-        self.last_verified_inputs = [None, None];
         println!("updating player count to {:?}", self);
-
         self.player_count = player_cnt;
     }
     pub fn insert_curr_player_inp(&mut self, inp: Vec<PlayerInput>, frame: u32) {
@@ -121,12 +124,16 @@ impl InputBuffer {
     }
     pub fn insert_other_player_inp(&mut self, inp: Vec<PlayerInput>, frame: u32) {
         if
-            let Some(input_frame) = self.input_frames
+            let Some(first_input_frame_local) = self.input_frames
                 .iter()
                 .find(|input_frame| input_frame.inputs[self.local_player as usize].is_some())
         {
-            if frame < input_frame.frame {
-                println!("tried to insert frame thats before current own player input");
+            if frame < first_input_frame_local.frame {
+                println!(
+                    "tried to insert frame thats before current own player input frame : {}, actual curr frame ; {}",
+                    frame,
+                    first_input_frame_local.frame
+                );
                 return;
             }
         }
