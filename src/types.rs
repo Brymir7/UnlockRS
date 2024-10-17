@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use macroquad::{ color::Color, math::Vec2 };
 use crate::memory::FixedDataPtr;
 pub const MAX_UDP_PAYLOAD_LEN: usize = 508; // https://stackoverflow.com/questions/1098897/what-is-the-largest-safe-udp-packet-size-on-the-internet
@@ -6,11 +8,11 @@ pub const MAX_BULLETS: usize = 5;
 pub const MAX_ENEMIES: usize = 20;
 pub const AMT_RANDOM_BYTES: usize = 1;
 pub const RELIABLE_FLAG_BYTE_POS: usize = AMT_RANDOM_BYTES; // AMT random bytes starts with bit 0 so bit AMT_RANDOM_BYTES - 1 is last bit of it, and AMT_RANDOM_BYTES IS FREE
-pub const SEQ_NUM_BYTE_POS: usize = RELIABLE_FLAG_BYTE_POS + 1; 
+pub const SEQ_NUM_BYTE_POS: usize = RELIABLE_FLAG_BYTE_POS + 1;
 
 pub const BASE_CHUNK_SEQ_NUM_BYTE_POS: usize = SEQ_NUM_BYTE_POS + 2; // u16
 pub const AMT_OF_CHUNKS_BYTE_POS: usize = BASE_CHUNK_SEQ_NUM_BYTE_POS + 2; // u16
-pub const DISCRIMINANT_BIT_START_POS: usize = AMT_OF_CHUNKS_BYTE_POS + 2;// u16
+pub const DISCRIMINANT_BIT_START_POS: usize = AMT_OF_CHUNKS_BYTE_POS + 2; // u16
 pub const DATA_BIT_START_POS: usize = DISCRIMINANT_BIT_START_POS + 1;
 pub const PLAYER_MOVE_LEFT_BYTE_POS: usize = 1;
 pub const PLAYER_MOVE_RIGHT_BYTE_POS: usize = 2;
@@ -193,6 +195,8 @@ pub struct LogConfig {
     pub error: bool,
     pub debug: bool,
 }
+#[derive( Clone, Copy)]
 pub struct Logger {
     pub config: LogConfig,
+    pub last_log_time: Option<Instant>,
 }
