@@ -254,11 +254,13 @@ impl ConnectionServer {
         );
         match serialized_message {
             crate::types::SerializedMessageType::Chunked(chunks) => {
+                let mut i = 0;
                 for msg in chunks.bytes {
                     debug_assert!(
                         u16::from_le_bytes([msg[SEQ_NUM_BYTE_POS], msg[SEQ_NUM_BYTE_POS + 1]]) ==
-                            seq_num.0
+                            seq_num.0 + (i as u16)
                     );
+                    i += 1;
                     self.socket.send(&msg)?;
                     self.pending_acks.insert(seq_num, (
                         Instant::now(),

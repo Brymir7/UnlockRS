@@ -276,7 +276,7 @@ impl NetworkMessage {
                     msg_bytes.push(1); // true
                     msg_bytes.extend_from_slice(&seq_num.0.wrapping_add(i as u16).to_le_bytes());
                     msg_bytes.extend_from_slice(&seq_num.0.to_le_bytes());
-                    msg_bytes.push(amt_of_chunks as u8);
+                    msg_bytes.extend_from_slice(&(amt_of_chunks as u16).to_le_bytes());
                     msg_bytes.push(discriminator_byte);
 
                     debug_assert!(msg_bytes[RELIABLE_FLAG_BYTE_POS] == 1);
@@ -292,7 +292,12 @@ impl NetworkMessage {
                             msg_bytes[BASE_CHUNK_SEQ_NUM_BYTE_POS + 1],
                         ]) == seq_num.0
                     );
-                    debug_assert!(msg_bytes[AMT_OF_CHUNKS_BYTE_POS] == (amt_of_chunks as u8));
+                    debug_assert!(
+                        u16::from_le_bytes([
+                            msg_bytes[AMT_OF_CHUNKS_BYTE_POS],
+                            msg_bytes[AMT_OF_CHUNKS_BYTE_POS + 1],
+                        ]) == amt_of_chunks as u16
+                    );
                     debug_assert!(msg_bytes[DISCRIMINANT_BIT_START_POS] == discriminator_byte);
                 }
                 NetworkMessageType::SendOnce | NetworkMessageType::SendOnceButReceiveAck(_) => {
@@ -358,9 +363,15 @@ impl NetworkMessage {
             }
             NetworkMessageType::SendOnce => {
                 bytes.push(0);
+                // seq num is u16
                 bytes.push(0);
+                bytes.push(0);
+                //
+
                 debug_assert!(bytes[RELIABLE_FLAG_BYTE_POS] == 0);
-                debug_assert!(bytes[SEQ_NUM_BYTE_POS] == 0);
+                debug_assert!(
+                    u16::from_le_bytes([bytes[SEQ_NUM_BYTE_POS], bytes[SEQ_NUM_BYTE_POS + 1]]) == 0
+                );
             }
         }
 
@@ -437,7 +448,11 @@ impl NetworkMessage {
                 debug_assert!(ids.len() <= (u8::MAX as usize));
                 bytes.push(ids.len() as u8);
                 bytes.extend(ids);
-                println!("length of server send ids {}", ids.len() as u8);
+                println!(
+                    "length of server send ids {} vs bytes [VECTOR_LEN_BYTE_POS] {}",
+                    ids.len() as u8,
+                    bytes[VECTOR_LEN_BYTE_POS]
+                );
                 debug_assert!(bytes[VECTOR_LEN_BYTE_POS] == (ids.len() as u8));
                 SerializedMessageType::from_serialized_msg(SerializedNetworkMessage {
                     bytes,
