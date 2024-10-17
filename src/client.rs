@@ -205,7 +205,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut predicted_simulation: Option<Simulation> = None;
     let mut verified_simulation: Option<Simulation> = None;
 
-    let (connection_server, request_sender, response_receiver) = ConnectionServer::new()?;
+    let (connection_server, request_sender, server_message_rcv) = ConnectionServer::new()?;
     ConnectionServer::start(connection_server);
     let mut local_player_id = PlayerID::Player1;
 
@@ -239,7 +239,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             GameState::WaitingForPlayerList => {
                 draw_text("Waiting for player list...", 20.0, 40.0, 30.0, WHITE);
-                if let Ok(NetworkMessage::ServerSentPlayerIDs(ids)) = response_receiver.try_recv() {
+                if let Ok(NetworkMessage::ServerSentPlayerIDs(ids)) = server_message_rcv.try_recv() {
                     // println!("received ids {:?}", ids);
                     other_player_ids = ids;
                     game_state = GameState::ChoosePlayer;
@@ -288,7 +288,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
 
                 if chose_player {
-                    if let Ok(msg) = response_receiver.try_recv() {
+                    if let Ok(msg) = server_message_rcv.try_recv() {
                         match msg {
                             NetworkMessage::ServerSentPlayerInputs(inputs) => {
                                 for input in inputs.buffered_inputs {
@@ -377,10 +377,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 )
                             )
                         )?;
-                        // println!(
-                        //     "client sent sth for frayme {}",
-                        //     pred_allocator.read_fixed(&predicted_simulation.frame) + 1
-                        // );
+
                         input_buffer.insert_curr_player_inp(curr_player.clone(), if
                             session_player_count > 1
                         {
@@ -388,7 +385,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         } else {
                             verif_allocator.read_fixed(&verified_simulation.frame) + 1
                         });
-                        while let Ok(msg) = response_receiver.try_recv() {
+                        while let Ok(msg) = server_message_rcv.try_recv() {
                             match msg {
                                 NetworkMessage::ServerSentPlayerInputs(inputs) => {
                                     for input in inputs.buffered_inputs {
@@ -455,6 +452,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                         let mut new_verified_state = false;
                         while let Some(verif_frame_input) = input_buffer.pop_next_verified_frame() {
+                            if verif_frame_input.inputs[local_player_id as usize].is_none() {
+                                request_sender.send(
+                                    types::GameRequestToNetwork::IndirectRequest(
+                                        types::GameMessage::ClientSentPlayerInputs(
+                                            NetworkedPlayerInput::new(
+                                                curr_player.clone(),
+                                                verif_frame_input.frame
+                                            )
+                                        )
+                                    )
+                                )?;
+                            }
                             // println!(
                             //     "verif sim current frame is {} so +1  after, input frame {:?}",
                             //     verif_allocator.read_fixed(&verified_simulation.frame),

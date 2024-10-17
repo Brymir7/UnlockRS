@@ -7,20 +7,6 @@ use std::{
     time::{ Duration, Instant },
 };
 
-use rand::seq;
-#[cfg(feature = "simulation_mode")]
-use simulation::{ PACKET_LOSS_PERCENTAGE, rng_gen_range };
-#[cfg(feature = "simulation_mode")]
-mod simulation {
-    use std::{ ops::Range, time::Duration };
-    use rand::Rng;
-    pub fn rng_gen_range(range: Range<f32>) -> f32 {
-        let mut rng = rand::thread_rng();
-        rng.gen_range(range)
-    }
-    pub const PACKET_LOSS_PERCENTAGE: f32 = 1.0;
-    pub const LATENCY_MS: Duration = Duration::from_millis(100);
-}
 const LOGGER: NetworkLogger = NetworkLogger { log: false };
 use crate::types::{
     BufferedNetworkedPlayerInputs,
@@ -36,6 +22,7 @@ use crate::types::{
     PlayerInput,
     SendInputsError,
     SeqNum,
+    SeqNumGenerator,
     SerializedNetworkMessage,
     ServerPlayerID,
     MAX_UDP_PAYLOAD_DATA_LENGTH,
@@ -47,7 +34,7 @@ const MAX_RETRIES: u32 = 8;
 const RETRY_TIMEOUT: Duration = Duration::from_millis(250);
 pub struct ConnectionServer {
     socket: Arc<UdpSocket>,
-    sequence_number: u8,
+    sequence_number: SeqNumGenerator,
     pending_acks: HashMap<SeqNum, (Instant, SerializedNetworkMessage)>,
     server_msg_sender: mpsc::Sender<NetworkMessage>,
     client_request_receiver: mpsc::Receiver<GameRequestToNetwork>,
@@ -79,7 +66,9 @@ impl ConnectionServer {
         let connection_server = Arc::new(
             Mutex::new(ConnectionServer {
                 socket,
-                sequence_number: 0,
+                sequence_number: SeqNumGenerator {
+                    seq_num: SeqNum(0),
+                },
                 pending_acks: HashMap::new(),
                 server_msg_sender: response_sender,
                 client_request_receiver: request_receiver,
@@ -158,10 +147,10 @@ impl ConnectionServer {
                         let _ = self.server_msg_sender.send(NetworkMessage::ServerSentWorld(data));
                     }
                     NetworkMessage::ServerSentPlayerInputs(inputs) => {
-                        debug_assert!(
-                            inputs.buffered_inputs.windows(2).all(|w| w[0].frame + 1 == w[1].frame),
-                            "Frames are not in order or there are gaps"
-                        );
+                        // debug_assert!(
+                        //     inputs.buffered_inputs.windows(2).all(|w| w[0].frame + 1 == w[1].frame),
+                        //     "Frames are not in order or there are gaps"
+                        // );
 
                         let _ = self.server_msg_sender.send(
                             NetworkMessage::ServerSentPlayerInputs(inputs)
@@ -259,54 +248,29 @@ impl ConnectionServer {
     }
 
     pub fn send_reliable(&mut self, request: &NetworkMessage) -> Result<(), std::io::Error> {
+        let seq_num = self.sequence_number.get_seq_num();
         let serialized_message = request.serialize(
-            crate::types::NetworkMessageType::ResendUntilAck(SeqNum(self.sequence_number))
+            crate::types::NetworkMessageType::ResendUntilAck(seq_num)
         );
         match serialized_message {
             crate::types::SerializedMessageType::Chunked(chunks) => {
                 for msg in chunks.bytes {
-                    #[cfg(feature = "simulation_mode")]
-                    {
-                        if rng_gen_range(0.0..100.0) < PACKET_LOSS_PERCENTAGE {
-                            self.pending_acks.insert(SeqNum(self.sequence_number), (
-                                Instant::now(),
-                                SerializedNetworkMessage { bytes: msg.clone() },
-                            ));
-                            self.sequence_number = self.sequence_number.wrapping_add(1);
-                            LOGGER.log_simulated_packet_loss(self.sequence_number);
-                            continue;
-                        }
-                    }
-                    debug_assert!(msg[SEQ_NUM_BYTE_POS] == self.sequence_number);
+                    debug_assert!(
+                        u16::from_le_bytes([msg[SEQ_NUM_BYTE_POS], msg[SEQ_NUM_BYTE_POS + 1]]) ==
+                            seq_num.0
+                    );
                     self.socket.send(&msg)?;
-                    self.pending_acks.insert(SeqNum(self.sequence_number), (
+                    self.pending_acks.insert(seq_num, (
                         Instant::now(),
                         SerializedNetworkMessage { bytes: msg },
                     ));
-                    LOGGER.log_sent_packet(self.sequence_number);
-                    self.sequence_number = self.sequence_number.wrapping_add(1);
+                    LOGGER.log_sent_packet(seq_num.0);
                 }
                 Ok(())
             }
             crate::types::SerializedMessageType::NonChunked(serialized_message) => {
-                #[cfg(feature = "simulation_mode")]
-                {
-                    if rng_gen_range(0.0..100.0) < PACKET_LOSS_PERCENTAGE {
-                        self.pending_acks.insert(SeqNum(self.sequence_number), (
-                            Instant::now(),
-                            serialized_message.clone(),
-                        ));
-                        self.sequence_number = self.sequence_number.wrapping_add(1);
-                        LOGGER.log_simulated_packet_loss(self.sequence_number);
-                        return Ok(());
-                    }
-                }
                 self.socket.send(&serialized_message.bytes)?;
-                self.pending_acks.insert(SeqNum(self.sequence_number), (
-                    Instant::now(),
-                    serialized_message,
-                ));
-                self.sequence_number = self.sequence_number.wrapping_add(1);
+                self.pending_acks.insert(seq_num, (Instant::now(), serialized_message));
                 Ok(())
             }
         }
@@ -369,34 +333,24 @@ impl ConnectionServer {
     fn send_player_inputs(&mut self, inputs: NetworkedPlayerInput) -> Result<(), SendInputsError> {
         // let request = NetworkMessage::ClientSentPlayerInputs(inputs);
         // if they have the same length then we couldnt send inputs for multiple seconds, so we stop sending and disconnect
+        let seq_num = self.sequence_number.get_seq_num();
         if
             (self.unack_input_buffer.buffered_inputs.len() + 1) * 5 >
             MAX_UDP_PAYLOAD_DATA_LENGTH - 1 // if new input would overflow;  5 bytes 4 for frame, 1 for input, and 1 start bit for length of vec
         {
             println!("No player to player connection, DISCONNECTED");
-            panic!("");
+            self.unack_input_buffer.buffered_inputs.swap_remove(0); // remove first
             return Err(SendInputsError::Disconnected);
         }
-
+        println!("client sent sth for frame {:?}", inputs.frame);
         self.unack_input_buffer.insert_player_input(inputs.clone());
-        self.unack_input_seq_nums_to_frame.insert(SeqNum(self.sequence_number), inputs.frame);
-
+        self.unack_input_seq_nums_to_frame.insert(seq_num, inputs.frame);
+        // debug_assert!(
+        //     self.unack_input_buffer.buffered_inputs.windows(2).all(|i| i[0].frame + 1 == i[1].frame)
+        // );
         let request = NetworkMessage::ClientSentPlayerInputs(
             self.unack_input_buffer.clone()
-        ).serialize(NetworkMessageType::SendOnceButReceiveAck(SeqNum(self.sequence_number)));
-
-        self.sequence_number = self.sequence_number.wrapping_add(1);
-        #[cfg(feature = "simulation_mode")]
-        {
-            if rng_gen_range(0.0..100.0) < PACKET_LOSS_PERCENTAGE {
-                LOGGER.log_simulated_packet_loss(self.sequence_number);
-                return Ok(());
-            }
-        }
-        #[cfg(feature = "simulation_mode")]
-        {
-            sleep(Duration::from_millis((rng_gen_range(0.0..0.05) * 1000.0) as u64));
-        }
+        ).serialize(NetworkMessageType::SendOnceButReceiveAck(seq_num));
 
         match request {
             crate::types::SerializedMessageType::NonChunked(request) => {
