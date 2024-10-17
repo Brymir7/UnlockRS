@@ -293,10 +293,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             NetworkMessage::ServerSentPlayerInputs(inputs) => {
                                 for input in inputs.buffered_inputs {
                                     let other_player = input.inputs;
-                                    // println!(
-                                    //     "received inputs from server frame : {:?}",
-                                    //     input.frame
-                                    // );
+                                    println!(
+                                        "received inputs while loading |  frame : {:?}",
+                                        input.frame
+                                    );
                                     input_buffer.insert_other_player_inp(
                                         other_player.clone(),
                                         input.frame
@@ -388,19 +388,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         } else {
                             verif_allocator.read_fixed(&verified_simulation.frame) + 1
                         });
-                        if let Ok(msg) = response_receiver.try_recv() {
+                        while let Ok(msg) = response_receiver.try_recv() {
                             match msg {
                                 NetworkMessage::ServerSentPlayerInputs(inputs) => {
                                     for input in inputs.buffered_inputs {
                                         let other_player = input.inputs;
-                                        // println!(
-                                        //     "received inputs from server frame : {:?}",
-                                        //     input.frame
-                                        // );
+                                        println!(
+                                            "received inputs from server frame : {:?}",
+                                            input.frame
+                                        );
+                                        println!(
+                                            "currently stuck at inp buffer [0] {:?}",
+                                            input_buffer.input_frames[0].frame
+                                        );
                                         input_buffer.insert_other_player_inp(
                                             other_player.clone(),
                                             input.frame
                                         );
+                                        // println!(
+                                        //     "after insertion inp buffer [0] {:?}",
+                                        //     input_buffer.input_frames
+                                        // );
                                     }
                                 }
                                 NetworkMessage::ServerRequestHostForWorldData => {
@@ -446,10 +454,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
                         let mut new_verified_state = false;
-                        // if session_player_count > 1 && input_buffer.input_frames.len() > 25 {
-                        //     println!("Input buffer state {:?}", input_buffer);
-                        //     exit(1);
-                        // }
                         while let Some(verif_frame_input) = input_buffer.pop_next_verified_frame() {
                             // println!(
                             //     "verif sim current frame is {} so +1  after, input frame {:?}",
@@ -483,8 +487,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         ) in input_buffer.excluding_iter_after_last_verified() {
                             if
                                 pred_allocator.read_fixed(&predicted_simulation.frame) < // by doing this we exclude verified automatically as it would be in the .frame from verified update above
-                                    pred_frame_input.frame &&
-                                pred_frame_input.inputs[local_player_id as usize].is_some()
+                                pred_frame_input.frame
+                                // if we need to play catchup we cannot afford to wait for this players input as we would stay behind
                             {
                                 request_sender.send(
                                     types::GameRequestToNetwork::IndirectRequest(

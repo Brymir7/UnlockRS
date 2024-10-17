@@ -107,7 +107,7 @@ impl ConnectionServer {
         let receive_socket = Arc::clone(&self.socket);
         let ack_sender = self.ack_sender.clone();
         let chunk_collector = Arc::clone(&self.chunked_msg_collector);
-        let msg_sender = self.network_msg_sender.clone();
+        let parsed_network_msg_sender = self.network_msg_sender.clone();
         let receive_thread = thread::spawn(move || {
             let mut buffer = MsgBuffer::default();
             loop {
@@ -124,7 +124,7 @@ impl ConnectionServer {
                                     if let Some(seq_num) = request.seq_num {
                                         let _ = ack_sender.send(SeqNum(seq_num));
                                     }
-                                    let _ = msg_sender.send(request.msg);
+                                    let _ = parsed_network_msg_sender.send(request.msg);
                                 }
                                 crate::types::DeserializedMessageType::ChunkOfMessage(chunk) => {
                                     let _ = ack_sender.send(SeqNum(chunk.seq_num));
@@ -132,7 +132,7 @@ impl ConnectionServer {
                                     chunk_collector.collect(chunk);
                                     println!("Collected chunk");
                                     if let Some(msg) = chunk_collector.try_combine() {
-                                        let _ = msg_sender.send(msg.msg);
+                                        let _ = parsed_network_msg_sender.send(msg.msg);
                                     }
                                 }
                             }
@@ -158,6 +158,11 @@ impl ConnectionServer {
                         let _ = self.server_msg_sender.send(NetworkMessage::ServerSentWorld(data));
                     }
                     NetworkMessage::ServerSentPlayerInputs(inputs) => {
+                        debug_assert!(
+                            inputs.buffered_inputs.windows(2).all(|w| w[0].frame + 1 == w[1].frame),
+                            "Frames are not in order or there are gaps"
+                        );
+
                         let _ = self.server_msg_sender.send(
                             NetworkMessage::ServerSentPlayerInputs(inputs)
                         );
@@ -368,8 +373,8 @@ impl ConnectionServer {
             (self.unack_input_buffer.buffered_inputs.len() + 1) * 5 >
             MAX_UDP_PAYLOAD_DATA_LENGTH - 1 // if new input would overflow;  5 bytes 4 for frame, 1 for input, and 1 start bit for length of vec
         {
-            println!("No player to player connection");
-            self.unack_input_buffer.buffered_inputs.clear();
+            println!("No player to player connection, DISCONNECTED");
+            panic!("");
             return Err(SendInputsError::Disconnected);
         }
 
