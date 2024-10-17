@@ -4,6 +4,7 @@ use std::hash::Hash;
 use std::net::{ SocketAddr, UdpSocket };
 use std::collections::HashMap;
 use std::process::exit;
+use std::sync::mpsc;
 use std::thread;
 use std::time::{ Duration, Instant };
 use macroquad::input;
@@ -48,6 +49,12 @@ struct Server {
     unack_input_seq_nums_to_frame: HashMap<SocketAddr, HashMap<SeqNum, u32>>,
     unack_input_buffer: HashMap<SocketAddr, BufferedNetworkedPlayerInputs>,
     logger: Logger,
+
+    #[cfg(feature = "simulation_mode")]
+    msg_sender: mpsc::Sender<(Vec<u8>, SocketAddr)>, // Only included if feature is enabled
+
+    #[cfg(feature = "simulation_mode")]
+    msg_rcv: mpsc::Receiver<(Vec<u8>, SocketAddr)>, // Only included if feature is enabled
 }
 
 impl Server {
@@ -55,6 +62,8 @@ impl Server {
         let addr_to_player: HashMap<SocketAddr, ServerPlayerID> = HashMap::new();
         let socket = UdpSocket::bind("127.0.0.1:8080").expect("Server Failed to bind socket.");
         let msg_buffer: MsgBuffer = MsgBuffer::default();
+        #[cfg(feature = "simulation_mode")]
+        let msg_channel = mpsc::channel();
         Server {
             socket,
             addr_to_player,
@@ -69,6 +78,11 @@ impl Server {
             unack_input_buffer: HashMap::new(),
             unack_input_seq_nums_to_frame: HashMap::new(),
             logger: Logger::new(LogConfig::default()),
+
+            #[cfg(feature = "simulation_mode")]
+            msg_sender: msg_channel.0,
+            #[cfg(feature = "simulation_mode")]
+            msg_rcv: msg_channel.1,
         }
     }
 
@@ -79,27 +93,29 @@ impl Server {
         {
             let socket = self.socket.try_clone().expect("Failed to clone socket");
             let mut buffer = [0; MAX_UDP_PAYLOAD_LEN];
-            let receiver = thread::spawn(move || {
-                match socket.recv_from(&mut buffer) {
-                    Ok((size, src)) => {
-                        let mut rng = rand::thread_rng();
-                        if rng.gen::<f32>() >= PACKET_LOSS {
-                            thread::sleep(
-                                Duration::from_millis(rng.gen_range(MIN_LATENCY..=MAX_LATENCY))
-                            );
-                            Some((buffer[..size].to_vec(), src))
-                        } else {
-                            None // Simulate packet loss
-                        }
-                    }
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => None,
-                    Err(e) => {
-                        eprintln!("Error receiving data: {}", e);
-                        None
+            let mut logger = self.logger.clone();
+            let msg_sender = self.msg_sender.clone();
+            match socket.recv_from(&mut buffer) {
+                Ok((size, src)) => {
+                    let mut rng = rand::thread_rng();
+                    logger.debug_log_time("Received msg now!");
+                    if rng.gen::<f32>() >= PACKET_LOSS {
+                        let delay = rng.gen_range(MIN_LATENCY..=MAX_LATENCY);
+                        thread::spawn(move || {
+                            thread::sleep(Duration::from_millis(delay));
+                            msg_sender
+                                .send((buffer[..size].to_vec(), src))
+                                .expect("Failed to send to channel");
+                        });
                     }
                 }
-            });
-            if let Ok(Some((data, src))) = receiver.join() {
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(e) => {
+                    eprintln!("Error receiving data: {}", e);
+                }
+            }
+
+            if let Ok((data, src)) = self.msg_rcv.try_recv() {
                 self.msg_buffer.0[..data.len()].copy_from_slice(&data);
 
                 if !self.addr_to_player.contains_key(&src) {
@@ -110,9 +126,11 @@ impl Server {
                 if let Ok(server_side_msg) = msg {
                     match server_side_msg {
                         DeserializedMessageType::NonChunked(server_side_msg) => {
+                            logger.debug_log_time("Handling msg now!");
                             self.handle_message(server_side_msg, &src);
                         }
                         DeserializedMessageType::ChunkOfMessage(chunk) => {
+                            logger.debug_log_time("Handling msg now!");
                             self.send_ack(SeqNum(chunk.seq_num), &src);
                             if let Some(collector) = self.pending_chunked_msgs.get_mut(&src) {
                                 collector.collect(chunk);
@@ -398,7 +416,8 @@ impl Server {
                                         .expect("Failed to clone socket");
                                     let msg_bytes = msg.bytes.clone();
                                     let dst = addr;
-
+                                    let mut logger = self.logger.clone();
+                                    logger.debug_log_time(format!("Simulating latency message"));
                                     thread::spawn(move || {
                                         let mut rng = rand::thread_rng();
                                         if rng.gen::<f32>() < PACKET_LOSS {
@@ -408,6 +427,9 @@ impl Server {
                                             Duration::from_millis(
                                                 rng.gen_range(MIN_LATENCY..=MAX_LATENCY)
                                             )
+                                        );
+                                        logger.debug_log_time(
+                                            format!("Simulating latency message")
                                         );
                                         if let Err(e) = socket.send_to(&msg_bytes, dst) {
                                             eprintln!("Failed to send input message: {}", e);

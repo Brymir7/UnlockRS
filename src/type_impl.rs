@@ -1,4 +1,4 @@
-use std::{ fmt::Display, fs::OpenOptions };
+use std::{ fmt::Display, fs::OpenOptions, time::Instant };
 
 use crate::types::{
     BufferedNetworkedPlayerInputs,
@@ -296,7 +296,7 @@ impl NetworkMessage {
                         u16::from_le_bytes([
                             msg_bytes[AMT_OF_CHUNKS_BYTE_POS],
                             msg_bytes[AMT_OF_CHUNKS_BYTE_POS + 1],
-                        ]) == amt_of_chunks as u16
+                        ]) == (amt_of_chunks as u16)
                     );
                     debug_assert!(msg_bytes[DISCRIMINANT_BIT_START_POS] == discriminator_byte);
                 }
@@ -755,20 +755,20 @@ impl BufferedNetworkedPlayerInputs {
 impl Default for LogConfig {
     fn default() -> Self {
         Self {
-            connection: true,
-            world_state: true,
+            connection: false,
+            world_state: false,
             player_input: false,
-            message_handling: true,
+            message_handling: false,
             ack: false,
             error: true,
-            debug: false,
+            debug: true,
         }
     }
 }
 
 impl Logger {
     pub fn new(config: LogConfig) -> Self {
-        Self { config }
+        Self { config, last_log_time: None }
     }
 
     pub fn connection<T: Display>(&self, message: T) {
@@ -810,6 +810,21 @@ impl Logger {
     pub fn debug<T: Display>(&self, message: T) {
         if self.config.debug {
             println!("[DEBUG] {}", message);
+        }
+    }
+    pub fn debug_log_time<T: Display>(&mut self, message: T) {
+        if self.config.debug {
+            let now = Instant::now();
+
+            if let Some(last_time) = self.last_log_time {
+                let delta = now.duration_since(last_time);
+                println!("[DEBUG] {} | Time: {:?} | Delta: {:?}", message, now, delta);
+            } else {
+                println!("[DEBUG] {}", message);
+            }
+
+            // Update the last log time
+            self.last_log_time = Some(now);
         }
     }
 }
