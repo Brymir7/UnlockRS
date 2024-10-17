@@ -1,22 +1,25 @@
-use std::fs::OpenOptions;
+use std::{ fmt::Display, fs::OpenOptions };
 
 use crate::types::{
+    BufferedNetworkedPlayerInputs,
     ChunkOfMessage,
     ChunkedMessageCollector,
     ChunkedSerializedNetworkMessage,
     DeserializedMessage,
     DeserializedMessageType,
+    LogConfig,
+    Logger,
     MessageHeader,
     MsgBuffer,
     NetworkLogger,
     NetworkMessage,
     NetworkMessageType,
     NetworkedPlayerInput,
-    BufferedNetworkedPlayerInputs,
     PacketParser,
     PlayerID,
     PlayerInput,
     SeqNum,
+    SeqNumGenerator,
     SerializedMessageType,
     SerializedNetworkMessage,
     ServerPlayerID,
@@ -37,9 +40,19 @@ use crate::types::{
 impl PacketParser {
     pub fn parse_header(bytes: &[u8]) -> Result<MessageHeader, &'static str> {
         let reliable = bytes[RELIABLE_FLAG_BYTE_POS] > 0;
-        let seq_num = if reliable { Some(SeqNum(bytes[SEQ_NUM_BYTE_POS])) } else { None };
-        let amt_of_chunks = bytes[AMT_OF_CHUNKS_BYTE_POS];
-        let base_chunk_seq_num = bytes[BASE_CHUNK_SEQ_NUM_BYTE_POS];
+        let seq_num = if reliable {
+            Some(SeqNum(u16::from_le_bytes([bytes[SEQ_NUM_BYTE_POS], bytes[SEQ_NUM_BYTE_POS + 1]])))
+        } else {
+            None
+        };
+        let amt_of_chunks = u16::from_le_bytes([
+            bytes[AMT_OF_CHUNKS_BYTE_POS],
+            bytes[AMT_OF_CHUNKS_BYTE_POS + 1],
+        ]);
+        let base_chunk_seq_num = u16::from_le_bytes([
+            bytes[BASE_CHUNK_SEQ_NUM_BYTE_POS],
+            bytes[BASE_CHUNK_SEQ_NUM_BYTE_POS + 1],
+        ]);
         let is_chunked = amt_of_chunks > 0;
         let discriminator = bytes[DISCRIMINANT_BIT_START_POS];
         let message = NetworkMessage::try_from(discriminator)?;
@@ -99,7 +112,7 @@ impl PacketParser {
                 if data.len() < std::mem::size_of::<SeqNum>() {
                     return Err("Insufficient data for Ack message");
                 }
-                let seq_num = SeqNum(data[0]); // Assuming SeqNum is a single byte
+                let seq_num = SeqNum(u16::from_le_bytes([data[0], data[1]])); // Assuming SeqNum is a single byte
                 match header.message {
                     NetworkMessage::ServerSideAck(_) => NetworkMessage::ServerSideAck(seq_num),
                     NetworkMessage::ClientSideAck(_) => NetworkMessage::ClientSideAck(seq_num),
@@ -226,7 +239,7 @@ fn parse_player_inputs(byte: u8) -> Vec<PlayerInput> {
     return res;
 }
 impl DeserializedMessage {
-    fn from_reliable_msg(msg: NetworkMessage, seq_num: Option<u8>) -> Self {
+    fn from_reliable_msg(msg: NetworkMessage, seq_num: Option<u16>) -> Self {
         DeserializedMessage {
             reliable: true,
             seq_num,
@@ -261,14 +274,24 @@ impl NetworkMessage {
                 NetworkMessageType::ResendUntilAck(seq_num) => {
                     msg_bytes.extend(random_bytes.clone());
                     msg_bytes.push(1); // true
-                    msg_bytes.push(seq_num.0.wrapping_add(i as u8));
-                    msg_bytes.push(seq_num.0);
+                    msg_bytes.extend_from_slice(&seq_num.0.wrapping_add(i as u16).to_le_bytes());
+                    msg_bytes.extend_from_slice(&seq_num.0.to_le_bytes());
                     msg_bytes.push(amt_of_chunks as u8);
                     msg_bytes.push(discriminator_byte);
 
                     debug_assert!(msg_bytes[RELIABLE_FLAG_BYTE_POS] == 1);
-                    debug_assert!(msg_bytes[SEQ_NUM_BYTE_POS] == seq_num.0.wrapping_add(i as u8));
-                    debug_assert!(msg_bytes[BASE_CHUNK_SEQ_NUM_BYTE_POS] == seq_num.0);
+                    debug_assert!(
+                        u16::from_le_bytes([
+                            msg_bytes[SEQ_NUM_BYTE_POS],
+                            msg_bytes[SEQ_NUM_BYTE_POS + 1],
+                        ]) == seq_num.0.wrapping_add(i as u16)
+                    );
+                    debug_assert!(
+                        u16::from_le_bytes([
+                            msg_bytes[BASE_CHUNK_SEQ_NUM_BYTE_POS],
+                            msg_bytes[BASE_CHUNK_SEQ_NUM_BYTE_POS + 1],
+                        ]) == seq_num.0
+                    );
                     debug_assert!(msg_bytes[AMT_OF_CHUNKS_BYTE_POS] == (amt_of_chunks as u8));
                     debug_assert!(msg_bytes[DISCRIMINANT_BIT_START_POS] == discriminator_byte);
                 }
@@ -290,10 +313,20 @@ impl NetworkMessage {
         return SerializedMessageType::from_chunked_msg(byte_chunks);
     }
     pub fn push_non_chunked(bytes: &mut Vec<u8>) {
-        bytes.push(0);
-        bytes.push(0);
-        debug_assert!(bytes[BASE_CHUNK_SEQ_NUM_BYTE_POS] == 0);
-        debug_assert!(bytes[AMT_OF_CHUNKS_BYTE_POS] == 0);
+        bytes.extend_from_slice(&(0 as u16).to_le_bytes());
+        bytes.extend_from_slice(&(0 as u16).to_le_bytes());
+        debug_assert!(
+            u16::from_le_bytes([
+                bytes[BASE_CHUNK_SEQ_NUM_BYTE_POS],
+                bytes[BASE_CHUNK_SEQ_NUM_BYTE_POS + 1],
+            ]) == 0
+        );
+        debug_assert!(
+            u16::from_le_bytes([
+                bytes[AMT_OF_CHUNKS_BYTE_POS],
+                bytes[AMT_OF_CHUNKS_BYTE_POS + 1],
+            ]) == 0
+        );
     }
     pub fn serialize(&self, msg_type: NetworkMessageType) -> SerializedMessageType {
         let msg = self.may_overflow_udp_packet_serialize(msg_type);
@@ -316,9 +349,12 @@ impl NetworkMessage {
             | NetworkMessageType::ResendUntilAck(seq_num)
             | NetworkMessageType::SendOnceButReceiveAck(seq_num) => {
                 bytes.push(1); // true
-                bytes.push(seq_num.0);
+                bytes.extend_from_slice(&seq_num.0.to_le_bytes());
                 debug_assert!(bytes[RELIABLE_FLAG_BYTE_POS] == 1);
-                debug_assert!(bytes[SEQ_NUM_BYTE_POS] == seq_num.0);
+                debug_assert!(
+                    u16::from_le_bytes([bytes[SEQ_NUM_BYTE_POS], bytes[SEQ_NUM_BYTE_POS + 1]]) ==
+                        seq_num.0
+                );
             }
             NetworkMessageType::SendOnce => {
                 bytes.push(0);
@@ -382,7 +418,7 @@ impl NetworkMessage {
             Self::ServerSideAck(ref seq_num) => {
                 Self::push_non_chunked(&mut bytes);
                 bytes.push(NetworkMessage::ServerSideAck(SeqNum(0)).into());
-                bytes.push(seq_num.0);
+                bytes.extend_from_slice(&seq_num.0.to_le_bytes());
                 SerializedMessageType::from_serialized_msg(SerializedNetworkMessage {
                     bytes,
                 })
@@ -390,7 +426,7 @@ impl NetworkMessage {
             Self::ClientSideAck(ref seq_num) => {
                 Self::push_non_chunked(&mut bytes);
                 bytes.push(NetworkMessage::ClientSideAck(SeqNum(0)).into());
-                bytes.push(seq_num.0);
+                bytes.extend_from_slice(&seq_num.0.to_le_bytes());
                 SerializedMessageType::from_serialized_msg(SerializedNetworkMessage {
                     bytes,
                 })
@@ -524,9 +560,12 @@ impl SerializedMessageType {
 
 impl ChunkedMessageCollector {
     pub fn default() -> Self {
-        const ARRAY_REPEAT_VALUE: Vec<ChunkOfMessage> = Vec::new();
+        let mut msgs = Vec::with_capacity(u16::MAX as usize); // TODO THIS is inefficient
+        for _ in 0..u16::MAX {
+            msgs.push(Vec::new());
+        }
         return ChunkedMessageCollector {
-            msgs: [ARRAY_REPEAT_VALUE; (u8::MAX as usize) + 1], // need 256 so that 255 is valid index -> u8:max needs to be a valid index see self.msgs[chunk.seq_num]
+            msgs: msgs,
         };
     }
     pub fn collect(&mut self, chunk: ChunkOfMessage) {
@@ -575,12 +614,12 @@ impl ChunkedMessageCollector {
 }
 
 impl NetworkLogger {
-    pub fn log_simulated_packet_loss(&self, sequence_number: u8) {
+    pub fn log_simulated_packet_loss(&self, sequence_number: u16) {
         if self.log {
             println!("Simulated packet loss for SeqNum {}", sequence_number);
         }
     }
-    pub fn log_received_ack(&self, ack_num: u8) {
+    pub fn log_received_ack(&self, ack_num: u16) {
         if self.log {
             println!("Received ack from server: {}", ack_num);
         }
@@ -590,12 +629,12 @@ impl NetworkLogger {
             println!("Currently pending acks: {:?}", pending)
         }
     }
-    pub fn log_sent_retransmission(&self, seq_num: u8) {
+    pub fn log_sent_retransmission(&self, seq_num: u16) {
         if self.log {
             println!("Sent retransmission for SeqNum: {}", seq_num);
         }
     }
-    pub fn log_sent_packet(&self, seq_num: u8) {
+    pub fn log_sent_packet(&self, seq_num: u16) {
         if self.log {
             println!("Sent packet {}", seq_num);
         }
@@ -691,10 +730,79 @@ impl BufferedNetworkedPlayerInputs {
         // }
 
         self.buffered_inputs.retain(|input| input.frame > frame);
-
         debug_assert!(
             self.buffered_inputs.iter().all(|input| input.frame > frame),
             "There are frames that are less than the acknowledged frame"
         );
+    }
+}
+
+impl Default for LogConfig {
+    fn default() -> Self {
+        Self {
+            connection: true,
+            world_state: true,
+            player_input: false,
+            message_handling: true,
+            ack: false,
+            error: true,
+            debug: false,
+        }
+    }
+}
+
+impl Logger {
+    pub fn new(config: LogConfig) -> Self {
+        Self { config }
+    }
+
+    pub fn connection<T: Display>(&self, message: T) {
+        if self.config.connection {
+            println!("[CONNECTION] {}", message);
+        }
+    }
+
+    pub fn world_state<T: Display>(&self, message: T) {
+        if self.config.world_state {
+            println!("[WORLD_STATE] {}", message);
+        }
+    }
+
+    pub fn player_input<T: Display>(&self, message: T) {
+        if self.config.player_input {
+            println!("[PLAYER_INPUT] {}", message);
+        }
+    }
+
+    pub fn message<T: Display>(&self, message: T) {
+        if self.config.message_handling {
+            println!("[MESSAGE] {}", message);
+        }
+    }
+
+    pub fn ack<T: Display>(&self, message: T) {
+        if self.config.ack {
+            println!("[ACK] {}", message);
+        }
+    }
+
+    pub fn error<T: Display>(&self, message: T) {
+        if self.config.error {
+            eprintln!("[ERROR] {}", message);
+        }
+    }
+
+    pub fn debug<T: Display>(&self, message: T) {
+        if self.config.debug {
+            println!("[DEBUG] {}", message);
+        }
+    }
+}
+
+impl SeqNumGenerator {
+    pub fn get_seq_num(&mut self) -> SeqNum {
+        let num = self.seq_num;
+        self.seq_num = SeqNum(self.seq_num.0.wrapping_add(1));
+        return num;
     }
 }

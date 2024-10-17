@@ -1,29 +1,41 @@
+use std::char::MAX;
+use std::f32::MIN;
 use std::hash::Hash;
 use std::net::{ SocketAddr, UdpSocket };
 use std::collections::HashMap;
 use std::process::exit;
+use std::thread;
 use std::time::{ Duration, Instant };
 use macroquad::input;
-use rand::seq;
+use rand::{ seq, Rng };
 use types::{
+    BufferedNetworkedPlayerInputs,
     ChunkOfMessage,
     ChunkedMessageCollector,
     DeserializedMessage,
     DeserializedMessageType,
+    LogConfig,
+    Logger,
     MsgBuffer,
     NetworkMessage,
-    BufferedNetworkedPlayerInputs,
     SeqNum,
+    SeqNumGenerator,
     SerializedMessageType,
     SerializedNetworkMessage,
     ServerPlayerID,
+    MAX_UDP_PAYLOAD_LEN,
     SEQ_NUM_BYTE_POS,
 };
 mod type_impl;
 mod types;
 mod memory;
+
 const MAX_RETRIES: u32 = 120;
 const RETRY_TIMEOUT: Duration = Duration::from_millis(16);
+const MIN_LATENCY: u64 = 20;
+const MAX_LATENCY: u64 = 100;
+const PACKET_LOSS: f32 = 0.02;
+
 struct Server {
     socket: UdpSocket,
     player_to_addr: [Option<SocketAddr>; (u8::MAX as usize) + 1],
@@ -32,9 +44,10 @@ struct Server {
     connections: HashMap<SocketAddr, Vec<SocketAddr>>,
     msg_buffer: MsgBuffer,
     pending_acks: HashMap<SocketAddr, HashMap<SeqNum, (Instant, SerializedNetworkMessage)>>,
-    sequence_number: u8,
+    sequence_number: SeqNumGenerator,
     unack_input_seq_nums_to_frame: HashMap<SocketAddr, HashMap<SeqNum, u32>>,
     unack_input_buffer: HashMap<SocketAddr, BufferedNetworkedPlayerInputs>,
+    logger: Logger,
 }
 
 impl Server {
@@ -50,30 +63,50 @@ impl Server {
             pending_chunked_msgs: HashMap::new(),
             msg_buffer,
             pending_acks: HashMap::new(),
-            sequence_number: 0,
+            sequence_number: SeqNumGenerator {
+                seq_num: SeqNum(0),
+            },
             unack_input_buffer: HashMap::new(),
             unack_input_seq_nums_to_frame: HashMap::new(),
+            logger: Logger::new(LogConfig::default()),
         }
     }
 
     pub fn update(&mut self) {
-        self.msg_buffer.clear(); // can rewrite to only read amt bytes form scoket
-        match self.socket.recv_from(&mut self.msg_buffer.0) {
-            Ok((_, src)) => {
+        self.msg_buffer.clear();
+
+        #[cfg(feature = "simulation_mode")]
+        {
+            let socket = self.socket.try_clone().expect("Failed to clone socket");
+            let mut buffer = [0; MAX_UDP_PAYLOAD_LEN];
+            let receiver = thread::spawn(move || {
+                match socket.recv_from(&mut buffer) {
+                    Ok((size, src)) => {
+                        let mut rng = rand::thread_rng();
+                        if rng.gen::<f32>() >= PACKET_LOSS {
+                            thread::sleep(
+                                Duration::from_millis(rng.gen_range(MIN_LATENCY..=MAX_LATENCY))
+                            );
+                            Some((buffer[..size].to_vec(), src))
+                        } else {
+                            None // Simulate packet loss
+                        }
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => None,
+                    Err(e) => {
+                        eprintln!("Error receiving data: {}", e);
+                        None
+                    }
+                }
+            });
+            if let Ok(Some((data, src))) = receiver.join() {
+                self.msg_buffer.0[..data.len()].copy_from_slice(&data);
+
                 if !self.addr_to_player.contains_key(&src) {
                     self.create_new_connection(&src);
-                    println!("addr to player doesnt ocntain key creating connection");
-                    println!(
-                        "{:?}",
-                        self.addr_to_player
-                            .values()
-                            .map(|v| v.0) // Assuming `v.0` is a u8
-                            .collect::<Vec<u8>>()
-                    );
                 }
 
                 let msg = self.msg_buffer.parse_on_server();
-
                 if let Ok(server_side_msg) = msg {
                     match server_side_msg {
                         DeserializedMessageType::NonChunked(server_side_msg) => {
@@ -86,22 +119,46 @@ impl Server {
                                 if let Some(msg) = collector.try_combine() {
                                     self.handle_message(msg, &src);
                                 }
-                            } else {
-                                eprintln!("Couldnt find collector for addr {}", src);
                             }
                         }
                     }
                 }
             }
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                println!("No data available");
-            }
-            Err(e) => {
-                eprintln!("Error receiving data: {}", e);
+        }
+
+        #[cfg(not(feature = "simulation_mode"))]
+        {
+            match self.socket.recv_from(&mut self.msg_buffer.0) {
+                Ok((_, src)) => {
+                    if !self.addr_to_player.contains_key(&src) {
+                        self.create_new_connection(&src);
+                    }
+
+                    let msg = self.msg_buffer.parse_on_server();
+                    if let Ok(server_side_msg) = msg {
+                        match server_side_msg {
+                            DeserializedMessageType::NonChunked(server_side_msg) => {
+                                self.handle_message(server_side_msg, &src);
+                            }
+                            DeserializedMessageType::ChunkOfMessage(chunk) => {
+                                self.send_ack(SeqNum(chunk.seq_num), &src);
+                                if let Some(collector) = self.pending_chunked_msgs.get_mut(&src) {
+                                    collector.collect(chunk);
+                                    if let Some(msg) = collector.try_combine() {
+                                        self.handle_message(msg, &src);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => (),
+                Err(e) => self.logger.error(format!("Error receiving data: {}", e)),
             }
         }
         self.handle_retransmissions();
     }
+
     pub fn handle_retransmissions(&mut self) {
         let now = Instant::now();
         let mut to_retry = Vec::new();
@@ -118,15 +175,18 @@ impl Server {
                     *sent_time = now;
                     match self.socket.send_to(&message.bytes, client_addr) {
                         Ok(_) => {
-                            //exit(1);
-                            println!("Resent message {:?} to client {:?}", seq, client_addr);
+                            self.logger.message(
+                                format!("Resent message {:?} to client {:?}", seq, client_addr)
+                            );
                         }
                         Err(e) => {
-                            eprintln!(
-                                "Failed to resend message {:?} to client {:?}: {}",
-                                seq,
-                                client_addr,
-                                e
+                            self.logger.error(
+                                format!(
+                                    "Failed to resend message {:?} to client {:?}: {}",
+                                    seq,
+                                    client_addr,
+                                    e
+                                )
                             );
                         }
                     }
@@ -138,13 +198,14 @@ impl Server {
             pending_messages.retain(|seq, (sent_time, _)| {
                 let resend = now.duration_since(*sent_time) < RETRY_TIMEOUT * MAX_RETRIES;
                 if !resend {
-                    println!("lost connection with {:?}", seq);
+                    self.logger.connection(format!("Lost connection with {:?}", seq));
                 }
                 return resend;
             });
             !pending_messages.is_empty()
         });
     }
+
     pub fn create_new_connection(&mut self, addr: &SocketAddr) {
         let new_id = ServerPlayerID(self.addr_to_player.len() as u8);
         self.addr_to_player.insert(*addr, new_id);
@@ -155,7 +216,9 @@ impl Server {
             buffered_inputs: Vec::new(),
         });
         self.unack_input_seq_nums_to_frame.insert(*addr, HashMap::new());
+        self.logger.connection(format!("New connection established with {:?}", addr));
     }
+
     pub fn create_player_conn_from_to_host(
         &mut self,
         player1_addr: SocketAddr,
@@ -167,40 +230,154 @@ impl Server {
             NetworkMessage::ServerRequestHostForWorldData,
             &player2_addr
         );
+        self.logger.connection(
+            format!("Created connection between {:?} and {:?}", player1_addr, player2_addr)
+        );
     }
 
     pub fn handle_message(&mut self, msg: DeserializedMessage, src: &SocketAddr) {
         if let Some(seq_num) = msg.seq_num {
-            // println!("msg arrived with seq num {}", seq_num);
+            self.logger.debug(format!("Message arrived with seq num {}", seq_num));
             self.process_message(msg.msg, src);
             self.send_ack(SeqNum(seq_num), src);
         } else {
             self.process_message(msg.msg, src);
         }
     }
+
+    fn process_message(&mut self, msg: NetworkMessage, src: &SocketAddr) {
+        match msg {
+            NetworkMessage::ClientSentWorld(data) => {
+                self.logger.world_state("Received world state from client");
+                self.broadcast_reliable(NetworkMessage::ServerSentWorld(data), src);
+            }
+            NetworkMessage::ClientSentPlayerInputs(inputs) => {
+                self.logger.player_input(
+                    format!("Processing player inputs from {:?}: {:?}", src, inputs)
+                );
+                self.broadcast_inputs(&inputs, src);
+            }
+            NetworkMessage::GetServerPlayerIDs => {
+                let player_ids: Vec<u8> = self.addr_to_player
+                    .iter()
+                    .filter_map(|(addr, player)| {
+                        if *addr != *src { Some(player.0) } else { None }
+                    })
+                    .collect();
+                self.logger.message(format!("Sending player IDs: {:?}", player_ids));
+                self.send_and_resend_until_ack(
+                    NetworkMessage::ServerSentPlayerIDs(player_ids),
+                    src
+                );
+            }
+            NetworkMessage::ClientSideAck(seq_num) => {
+                self.handle_clients_ack(seq_num, src);
+            }
+            NetworkMessage::ClientConnectToOtherWorld(id) => {
+                debug_assert!(id.0 != self.addr_to_player.get(src).unwrap().0);
+                let other_player_addr = self.player_to_addr[id.0 as usize]
+                    .clone()
+                    .expect("Corrupt player to addr");
+                self.logger.connection("Client requesting connection");
+                self.create_player_conn_from_to_host(*src, other_player_addr);
+            }
+            _ => {
+                self.logger.debug("Received unhandled message type");
+            }
+        }
+    }
+
+    pub fn handle_clients_ack(&mut self, seq_num: SeqNum, src: &SocketAddr) {
+        if let Some(pending_messages) = self.pending_acks.get_mut(src) {
+            if pending_messages.remove(&seq_num).is_some() {
+                self.logger.ack(
+                    format!("Acknowledged message {:?} from client {:?}", seq_num, src)
+                );
+            } else {
+                self.handle_player_input_ack(seq_num, src);
+            }
+        } else {
+            self.logger.error(format!("Received acknowledgment from unknown client {:?}", src));
+            self.logger.debug(format!("Pending acks: {:?}", self.pending_acks));
+        }
+    }
+
+    fn send_ack(&mut self, seq_num: SeqNum, dst: &SocketAddr) {
+        let serialized_msg = NetworkMessage::ServerSideAck(seq_num).serialize(
+            types::NetworkMessageType::SendOnce
+        );
+        match serialized_msg {
+            SerializedMessageType::Chunked(_) => {
+                self.logger.error("ACK message shouldn't need to be chunked");
+                panic!("Ack msg shouldnt need to be chunked");
+            }
+            SerializedMessageType::NonChunked(serialized_msg) => {
+                if let Err(e) = self.socket.send_to(&serialized_msg.bytes, dst) {
+                    self.logger.error(format!("Failed to send ACK to {:?}: {}", dst, e));
+                }
+            }
+        }
+    }
+
+    pub fn send_and_resend_until_ack(&mut self, msg: NetworkMessage, dst: &SocketAddr) {
+        self.logger.debug(format!("Sending message {:?} to client {:?}", msg, dst));
+        let serialized_msg = msg.serialize(
+            types::NetworkMessageType::ResendUntilAck(self.sequence_number.seq_num)
+        );
+        match serialized_msg {
+            SerializedMessageType::Chunked(chunks) => {
+                for msg in chunks.bytes {
+                    let seq_num = self.sequence_number.get_seq_num();
+                    self.logger.message("Sending chunked message to client");
+                    debug_assert!(
+                        u16::from_le_bytes([msg[SEQ_NUM_BYTE_POS], msg[SEQ_NUM_BYTE_POS + 1]]) ==
+                            seq_num.0
+                    );
+                    if let Err(e) = self.socket.send_to(&msg, dst) {
+                        self.logger.error(
+                            format!("Failed to send reliable message to {:?}: {}", dst, e)
+                        );
+                    }
+                    self.pending_acks
+                        .entry(*dst)
+                        .or_insert_with(HashMap::new)
+                        .insert(seq_num, (Instant::now(), SerializedNetworkMessage { bytes: msg }));
+                }
+            }
+            SerializedMessageType::NonChunked(serialized_msg) => {
+                let seq_num = self.sequence_number.get_seq_num();
+                self.pending_acks
+                    .entry(*dst)
+                    .or_insert_with(HashMap::new)
+                    .insert(seq_num, (Instant::now(), serialized_msg.clone()));
+                if let Err(e) = self.socket.send_to(&serialized_msg.bytes, dst) {
+                    self.logger.error(
+                        format!("Failed to send reliable message to {:?}: {}", dst, e)
+                    );
+                }
+            }
+        }
+    }
+
     fn broadcast_reliable(&mut self, msg: NetworkMessage, src: &SocketAddr) {
         if let Some(connections) = self.connections.get(src) {
             let addresses: Vec<_> = connections.clone();
             for addr in addresses {
                 self.send_and_resend_until_ack(msg.clone(), &addr);
-                // todo this function shouldnt be called like this, it should be called once because not every client needs a different seq number
-            } // every client alrdy has separate data due to hashmap socketaddr -> any information, so we can use the same seq num like below
+            }
         }
     }
-    fn broadcast_inputs(&mut self, inputs: &BufferedNetworkedPlayerInputs, src: &SocketAddr) {
-        let seq_num = SeqNum(self.sequence_number); // TODO refactor to not be able to use sequence number without increasing after
-        self.sequence_number = self.sequence_number.wrapping_add(1);
 
+    fn broadcast_inputs(&mut self, inputs: &BufferedNetworkedPlayerInputs, src: &SocketAddr) {
+        let seq_num = self.sequence_number.get_seq_num();
         if let Some(connections) = self.connections.get(src) {
             let msg = NetworkMessage::ServerSentPlayerInputs(inputs.clone()).serialize(
                 types::NetworkMessageType::SendOnceButReceiveAck(seq_num)
             );
-            self.sequence_number = self.sequence_number.wrapping_add(1);
-            let addresses: Vec<_> = connections.clone();
+
             match msg {
                 SerializedMessageType::NonChunked(msg) => {
-                    for addr in addresses {
-                        // insert these unack messages for each target, such that when the target sends an ack for these sequence numbers we know
+                    for addr in connections.clone() {
                         if let Some(inp_buffer) = self.unack_input_buffer.get_mut(&addr) {
                             inp_buffer.bulk_insert_player_input(inputs.clone());
                             if
@@ -213,23 +390,51 @@ impl Server {
                                         .last()
                                         .expect("If we send sth it shouldnt be empty").frame
                                 );
-                                self.socket.send_to(&msg.bytes, addr);
-                            } else {
-                                println!(
-                                    "BUG seq_num_to_frame should always exist for a connection when inp buffer exists"
-                                );
+
+                                #[cfg(feature = "simulation_mode")]
+                                {
+                                    let socket = self.socket
+                                        .try_clone()
+                                        .expect("Failed to clone socket");
+                                    let msg_bytes = msg.bytes.clone();
+                                    let dst = addr;
+
+                                    thread::spawn(move || {
+                                        let mut rng = rand::thread_rng();
+                                        if rng.gen::<f32>() < PACKET_LOSS {
+                                            return;
+                                        }
+                                        thread::sleep(
+                                            Duration::from_millis(
+                                                rng.gen_range(MIN_LATENCY..=MAX_LATENCY)
+                                            )
+                                        );
+                                        if let Err(e) = socket.send_to(&msg_bytes, dst) {
+                                            eprintln!("Failed to send input message: {}", e);
+                                        }
+                                    });
+                                }
+
+                                #[cfg(not(feature = "simulation_mode"))]
+                                {
+                                    if let Err(e) = self.socket.send_to(&msg.bytes, addr) {
+                                        self.logger.error(
+                                            format!("Failed to send input message: {}", e)
+                                        );
+                                    }
+                                }
                             }
-                        } else {
-                            println!(
-                                "Unack input buffer doesn't exist for client, either he timed out or code is buggy"
-                            );
                         }
                     }
                 }
-                SerializedMessageType::Chunked(_) => panic!("Inputs should never be chunked"),
+                SerializedMessageType::Chunked(_) => {
+                    self.logger.error("Inputs should never be chunked");
+                    panic!("Inputs should never be chunked");
+                }
             }
         }
     }
+
     fn handle_player_input_ack(&mut self, seq_num: SeqNum, src: &SocketAddr) {
         if let Some(inp_buffer) = self.unack_input_buffer.get_mut(src) {
             if let Some(seq_num_to_frame) = self.unack_input_seq_nums_to_frame.get_mut(src) {
@@ -237,136 +442,19 @@ impl Server {
                     inp_buffer.discard_acknowledged_frames(frame);
                 }
             } else {
-                println!("BUG: seq_num_to_frame should always exist when inp buffer exists");
-            }
-        } else {
-            println!("Unack input buffer missing for client, possibly timeout or bug");
-        }
-    }
-    // fn send_bulk_until_ack(&mut self, msg. )
-    fn process_message(&mut self, msg: NetworkMessage, src: &SocketAddr) {
-        match msg {
-            NetworkMessage::ClientSentWorld(data) => {
-                // RELAY WORLD
-                println!("received world state from client");
-                self.broadcast_reliable(NetworkMessage::ServerSentWorld(data), src);
-            }
-            NetworkMessage::ClientSentPlayerInputs(inputs) => {
-                // RELAY INPUTS
-                // println!("Processing player inputs from {:?}: {:?}", src, inputs);
-                self.broadcast_inputs(&inputs, src);
-            }
-            NetworkMessage::GetServerPlayerIDs => {
-                // println!("Request for player IDS");
-                let player_ids: Vec<u8> = self.addr_to_player
-                    .iter()
-                    .filter_map(|(addr, player)| {
-                        if *addr != *src { Some(player.0) } else { None }
-                    })
-                    .collect();
-                // println!("sent player ids {:?}", player_ids);
-                self.send_and_resend_until_ack(
-                    NetworkMessage::ServerSentPlayerIDs(player_ids),
-                    src
+                self.logger.error(
+                    "BUG: seq_num_to_frame should always exist when inp buffer exists"
                 );
             }
-            NetworkMessage::ClientSideAck(seq_num) => {
-                // todo!(
-                //     "Cannot us sequence number need to use player ID and sequence number or sth like that because otherwise an ????"
-                // );
-                // the client that sends it isnt the one who should also acknowledge te inputs
-                self.handle_clients_ack(seq_num, src);
-            }
-            NetworkMessage::ClientConnectToOtherWorld(id) => {
-                debug_assert!(id.0 != self.addr_to_player.get(src).unwrap().0);
-                // println!(
-                // "Connecting CALLER {:?} with TARGET {:?}",
-                // id,
-                // self.addr_to_player.get(src).unwrap()
-                // );
-                let other_player_addr = self.player_to_addr[id.0 as usize]
-                    .clone()
-                    .expect("Corrupt player to addr"); // TODO
-                self.create_player_conn_from_to_host(*src, other_player_addr);
-            }
-            _ => {
-                println!("Got some other message on server");
-            }
-            // Add other message types as needed
-        }
-    }
-    pub fn handle_clients_ack(&mut self, seq_num: SeqNum, src: &SocketAddr) {
-        if let Some(pending_messages) = self.pending_acks.get_mut(src) {
-            if pending_messages.remove(&seq_num).is_some() {
-                // println!("Acknowledged message {:?} from client {:?}", seq_num, src);
-            } else {
-                self.handle_player_input_ack(seq_num, src);
-            }
         } else {
-            println!("pending acks {:?}", self.pending_acks);
-            println!("Received acknowledgment from unknown client {:?}", src);
-        }
-    }
-    fn send_ack(&mut self, seq_num: SeqNum, dst: &SocketAddr) {
-        let serialized_msg = NetworkMessage::ServerSideAck(seq_num).serialize(
-            types::NetworkMessageType::SendOnce
-        );
-        match serialized_msg {
-            SerializedMessageType::Chunked(_) => {
-                panic!("Ack msg shouldnt need to be chunked");
-            }
-            SerializedMessageType::NonChunked(serialized_msg) => {
-                if let Err(e) = self.socket.send_to(&serialized_msg.bytes, dst) {
-                    eprintln!("Failed to send ACK to {:?}: {}", dst, e);
-                }
-            }
-        }
-    }
-
-    pub fn send_and_resend_until_ack(&mut self, msg: NetworkMessage, dst: &SocketAddr) {
-        let seq_num = SeqNum(self.sequence_number);
-        //println!("trying to send message x to client {:?}", msg);
-
-        let serialized_msg = msg.serialize(types::NetworkMessageType::ResendUntilAck(seq_num));
-        match serialized_msg {
-            SerializedMessageType::Chunked(chunks) => {
-                for msg in chunks.bytes {
-                    println!("sending chunked msg to client");
-                    debug_assert!(msg[SEQ_NUM_BYTE_POS] == self.sequence_number);
-                    // let msg_buffer = MsgBuffer(msg.clone().try_into().unwrap());
-                    // debug_assert!(match msg_buffer.parse_on_client().expect("...") {
-                    //     DeserializedMessageType::ChunkOfMessage(_) => true,
-                    //     DeserializedMessageType::NonChunked(_) => false,
-                    // });
-                    if let Err(e) = self.socket.send_to(&msg, dst) {
-                        eprintln!("Failed to send reliable message to {:?}: {}", dst, e);
-                    }
-                    self.pending_acks
-                        .entry(*dst)
-                        .or_insert_with(HashMap::new)
-                        .insert(SeqNum(self.sequence_number), (
-                            Instant::now(),
-                            SerializedNetworkMessage { bytes: msg },
-                        ));
-                    self.sequence_number = self.sequence_number.wrapping_add(1);
-                }
-            }
-            SerializedMessageType::NonChunked(serialized_msg) => {
-                self.pending_acks
-                    .entry(*dst)
-                    .or_insert_with(HashMap::new)
-                    .insert(seq_num, (Instant::now(), serialized_msg.clone()));
-                self.sequence_number = self.sequence_number.wrapping_add(1);
-                if let Err(e) = self.socket.send_to(&serialized_msg.bytes, dst) {
-                    eprintln!("Failed to send reliable message to {:?}: {}", dst, e);
-                }
-            }
+            self.logger.error("Unack input buffer missing for client, possibly timeout or bug");
         }
     }
 }
 
 fn main() -> std::io::Result<()> {
     let mut server = Server::new();
+    server.logger.message("Server started on 127.0.0.1:8080");
     loop {
         server.update();
     }

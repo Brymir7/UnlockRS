@@ -6,10 +6,10 @@ pub const MAX_BULLETS: usize = 5;
 pub const MAX_ENEMIES: usize = 20;
 pub const AMT_RANDOM_BYTES: usize = 1;
 pub const RELIABLE_FLAG_BYTE_POS: usize = AMT_RANDOM_BYTES; // AMT random bytes starts with bit 0 so bit AMT_RANDOM_BYTES - 1 is last bit of it, and AMT_RANDOM_BYTES IS FREE
-pub const SEQ_NUM_BYTE_POS: usize = RELIABLE_FLAG_BYTE_POS + 1;
+pub const SEQ_NUM_BYTE_POS: usize = RELIABLE_FLAG_BYTE_POS + 1; 
 
-pub const BASE_CHUNK_SEQ_NUM_BYTE_POS: usize = SEQ_NUM_BYTE_POS + 1;
-pub const AMT_OF_CHUNKS_BYTE_POS: usize = BASE_CHUNK_SEQ_NUM_BYTE_POS + 1;
+pub const BASE_CHUNK_SEQ_NUM_BYTE_POS: usize = SEQ_NUM_BYTE_POS + 2; // u16
+pub const AMT_OF_CHUNKS_BYTE_POS: usize = BASE_CHUNK_SEQ_NUM_BYTE_POS + 2; // u16
 pub const DISCRIMINANT_BIT_START_POS: usize = AMT_OF_CHUNKS_BYTE_POS + 1;
 pub const DATA_BIT_START_POS: usize = DISCRIMINANT_BIT_START_POS + 1;
 pub const PLAYER_MOVE_LEFT_BYTE_POS: usize = 1;
@@ -101,14 +101,18 @@ pub enum NetworkMessage {
     ServerRequestHostForWorldData = 10,
 }
 pub enum GameMessage {
-    ClientSentPlayerInputs(NetworkedPlayerInput)
+    ClientSentPlayerInputs(NetworkedPlayerInput),
 }
 pub enum GameRequestToNetwork {
     DirectRequest(NetworkMessage),
     IndirectRequest(GameMessage),
 }
 #[derive(Eq, Hash, PartialEq, Debug, Clone, Copy)]
-pub struct SeqNum(pub u8);
+pub struct SeqNum(pub u16);
+
+pub struct SeqNumGenerator {
+    pub seq_num: SeqNum,
+}
 pub enum NetworkMessageType {
     ResendUntilAck(SeqNum),
     SendOnce,
@@ -117,14 +121,14 @@ pub enum NetworkMessageType {
 #[derive(Debug)]
 pub struct DeserializedMessage {
     pub reliable: bool,
-    pub seq_num: Option<u8>,
+    pub seq_num: Option<u16>,
     pub msg: NetworkMessage,
 }
 #[derive(Debug)]
 pub struct ChunkOfMessage {
-    pub seq_num: u8,
-    pub base_seq_num: u8,
-    pub amt_of_chunks: u8,
+    pub seq_num: u16,
+    pub base_seq_num: u16,
+    pub amt_of_chunks: u16,
     pub data_bytes: [u8; MAX_UDP_PAYLOAD_LEN],
 }
 
@@ -156,14 +160,14 @@ pub enum GameState {
 }
 
 pub struct ChunkedMessageCollector {
-    pub msgs: [Vec<ChunkOfMessage>; (u8::MAX as usize) + 1],
+    pub msgs: Vec<Vec<ChunkOfMessage>>,
 }
 #[derive(Debug)]
 pub struct MessageHeader {
     pub reliable: bool,
     pub seq_num: Option<SeqNum>,
-    pub amt_of_chunks: u8,
-    pub base_chunk_seq_num: u8,
+    pub amt_of_chunks: u16,
+    pub base_chunk_seq_num: u16,
     pub is_chunked: bool,
     pub message: NetworkMessage,
 }
@@ -177,4 +181,18 @@ pub struct NetworkLogger {
 pub enum SendInputsError {
     Disconnected,
     IO(std::io::Error),
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct LogConfig {
+    pub connection: bool,
+    pub world_state: bool,
+    pub player_input: bool,
+    pub message_handling: bool,
+    pub ack: bool,
+    pub error: bool,
+    pub debug: bool,
+}
+pub struct Logger {
+    pub config: LogConfig,
 }
