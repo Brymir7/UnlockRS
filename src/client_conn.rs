@@ -1,9 +1,10 @@
 use core::panic;
 use std::{
-    collections::{ HashMap, HashSet },
+    collections::HashMap,
     net::UdpSocket,
+    process::exit,
     sync::{ mpsc, Arc, Mutex },
-    thread::{ self, sleep },
+    thread::{ self },
     time::{ Duration, Instant },
 };
 
@@ -11,7 +12,6 @@ const LOGGER: NetworkLogger = NetworkLogger { log: false };
 use crate::types::{
     BufferedNetworkedPlayerInputs,
     ChunkedMessageCollector,
-    DeserializedMessage,
     GameMessage,
     GameRequestToNetwork,
     MsgBuffer,
@@ -19,14 +19,12 @@ use crate::types::{
     NetworkMessage,
     NetworkMessageType,
     NetworkedPlayerInput,
-    PlayerInput,
     SendInputsError,
     SeqNum,
     SeqNumGenerator,
     SerializedNetworkMessage,
     ServerPlayerID,
     MAX_UDP_PAYLOAD_DATA_LENGTH,
-    MAX_UDP_PAYLOAD_LEN,
     SEQ_NUM_BYTE_POS,
 };
 
@@ -213,7 +211,14 @@ impl ConnectionServer {
                         GameRequestToNetwork::IndirectRequest(game_msg) => {
                             match game_msg {
                                 GameMessage::ClientSentPlayerInputs(inp) => {
-                                    self.send_player_inputs(inp);
+                                    if let Err(e) = self.send_player_inputs(inp) {
+                                        let error = match e {
+                                            SendInputsError::Disconnected => { "disconnected" }
+                                            SendInputsError::IO(io_e) => { &io_e.to_string() }
+                                        };
+                                        eprintln!("Error sending player inputs: {:?}", error);
+                                  
+                                    }
                                 }
                             }
                         }
@@ -333,18 +338,15 @@ impl ConnectionServer {
         self.send_reliable(&request)
     }
     fn send_player_inputs(&mut self, inputs: NetworkedPlayerInput) -> Result<(), SendInputsError> {
-        // let request = NetworkMessage::ClientSentPlayerInputs(inputs);
         // if they have the same length then we couldnt send inputs for multiple seconds, so we stop sending and disconnect
         let seq_num = self.sequence_number.get_seq_num();
         if
             (self.unack_input_buffer.buffered_inputs.len() + 1) * 5 >
             MAX_UDP_PAYLOAD_DATA_LENGTH - 1 // if new input would overflow;  5 bytes 4 for frame, 1 for input, and 1 start bit for length of vec
         {
-            println!("No player to player connection, DISCONNECTED");
             self.unack_input_buffer.buffered_inputs.swap_remove(0); // remove first
             return Err(SendInputsError::Disconnected);
         }
-        println!("client sent sth for frame {:?}", inputs.frame);
         self.unack_input_buffer.insert_player_input(inputs.clone());
         self.unack_input_seq_nums_to_frame.insert(seq_num, inputs.frame);
         // debug_assert!(
