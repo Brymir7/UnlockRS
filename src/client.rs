@@ -20,6 +20,7 @@ use types::{
 };
 use crate::types::NetworkMessage;
 const PHYSICS_FRAME_TIME: f32 = 1.0 / 60.0;
+use ::rand::{ rngs::StdRng, Rng, SeedableRng };
 mod types;
 mod type_impl;
 mod input_buffer;
@@ -84,9 +85,11 @@ impl Enemy {
         }
     }
 
-    fn new_random_at_top() -> Self {
+    fn new_random_at_top(frame: u32) -> Self {
+        let seed = frame as u64;
+        let mut rng = StdRng::seed_from_u64(seed);
         Self {
-            position: vec2(rand::gen_range(40.0, screen_width() - 40.0), 0.0),
+            position: vec2(rng.gen_range(40.0..screen_width() - 40.0), 0.0),
         }
     }
 
@@ -131,7 +134,7 @@ impl Enemy {
         enemies.sort_by_key(|enemy| !enemy.is_active());
 
         if frame % 60 == 0 && enemy_cnt < MAX_ENEMIES {
-            enemies[enemy_cnt as usize] = Enemy::new_random_at_top();
+            enemies[enemy_cnt as usize] = Enemy::new_random_at_top(frame);
         }
     }
 
@@ -170,7 +173,7 @@ impl Simulation {
             .alloc_and_write_fixed(&Player::new(100.0, BLUE))
             .expect("Failed to alloc player");
         let player2_ptr = alloc
-            .alloc_and_write_fixed(&Player::new(250.0, RED))
+            .alloc_and_write_fixed(&Player::new(250.0, GREEN))
             .expect("Failed to alloc 2nd player");
         let enemies_arr_ptr = alloc
             .alloc_and_write_fixed(&[Enemy::new(-5.0, -5.0); MAX_ENEMIES as usize])
