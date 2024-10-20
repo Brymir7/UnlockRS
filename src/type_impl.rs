@@ -760,8 +760,8 @@ impl Default for LogConfig {
             player_input: false,
             message_handling: false,
             ack: false,
-            error: true,
-            debug: true,
+            error: false,
+            debug: false,
         }
     }
 }
