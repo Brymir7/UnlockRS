@@ -144,7 +144,7 @@ impl Enemy {
         // Move active enemies to the front
         enemies.sort_by_key(|enemy| !enemy.is_active());
 
-        if frame % 60 == 0 && enemy_cnt < MAX_ENEMIES {
+        if frame % 120 == 0 && enemy_cnt < MAX_ENEMIES {
             enemies[enemy_cnt as usize] = Enemy::new_random_at_top(frame);
         }
     }
@@ -454,13 +454,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let dt = get_frame_time();
                     timer += dt;
                     let mut curr_player = Vec::new();
-                    if is_key_down(KeyCode::A) {
+                    if is_key_down(KeyCode::A) || is_key_down(KeyCode::Left) {
                         curr_player.push(PlayerInput::Left);
                     }
-                    if is_key_down(KeyCode::D) {
+                    if is_key_down(KeyCode::D) || is_key_down(KeyCode::Right) {
                         curr_player.push(PlayerInput::Right);
                     }
-                    if is_key_down(KeyCode::W) {
+                    if is_key_down(KeyCode::W) || is_key_down(KeyCode::Up){
                         curr_player.push(PlayerInput::Shoot);
                     }
                     if timer >= PHYSICS_FRAME_TIME {
