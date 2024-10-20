@@ -26,6 +26,17 @@ mod type_impl;
 mod input_buffer;
 mod client_conn;
 mod memory;
+fn simple_hash(frame_number: u32) -> u32 {
+    let bytes = frame_number.to_le_bytes();
+    let mut hash = 0u32;
+    for &byte in &bytes {
+        hash ^= byte as u32;
+        hash = hash.wrapping_mul(31);
+    }
+
+    hash
+}
+
 impl Player {
     fn new(x: f32, color: Color) -> Self {
         Self {
@@ -86,7 +97,7 @@ impl Enemy {
     }
 
     fn new_random_at_top(frame: u32) -> Self {
-        let seed = frame as u64;
+        let seed = simple_hash(frame) as u64;
         let mut rng = StdRng::seed_from_u64(seed);
         Self {
             position: vec2(rng.gen_range(40.0..screen_width() - 40.0), 0.0),

@@ -29,7 +29,7 @@ const MAX_RETRIES: u32 = 120;
 const RETRY_TIMEOUT: Duration = Duration::from_millis(16);
 const MIN_LATENCY: u64 = 20;
 const MAX_LATENCY: u64 = 100;
-const PACKET_LOSS: f32 = 0.02;
+const PACKET_LOSS: f32 = 0.01;
 
 struct Server {
     socket: UdpSocket,
