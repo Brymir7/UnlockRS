@@ -1,8 +1,5 @@
 use std::collections::VecDeque;
-
-use macroquad::input;
-
-use crate::{ types::{ Player, PlayerID, PlayerInput }, MAX_PLAYER_COUNT };
+use crate::{ types::{ PlayerID, PlayerInput }, MAX_PLAYER_COUNT };
 
 #[derive(Debug, Clone)]
 pub struct PlayerInputs {
@@ -233,8 +230,6 @@ impl InputBuffer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::VecDeque;
-
     #[test]
     fn test_new() {
         let buffer = InputBuffer::new();

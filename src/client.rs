@@ -1,11 +1,8 @@
-use std::{ collections::VecDeque, process::exit, sync::Arc, thread::sleep, time::Duration };
-
 use client_conn::ConnectionServer;
 use input_buffer::InputBuffer;
-use macroquad::{ input, prelude::*, telemetry::Frame };
+use macroquad::prelude::*;
 use memory::{ PageAllocator, PAGE_SIZE_BYTES };
 use types::{
-    BufferedNetworkedPlayerInputs,
     Bullet,
     Enemy,
     GameState,
@@ -15,13 +12,14 @@ use types::{
     PlayerInput,
     ServerPlayerID,
     Simulation,
+    BULLET_SIZE,
+    ENEMY_SIZE,
     MAX_BULLETS,
     MAX_ENEMIES,
+    RELOAD_TIME,
 };
 use crate::types::NetworkMessage;
 const PHYSICS_FRAME_TIME: f32 = 1.0 / 60.0;
-const SENT_PLAYER_STATE_TIME: f32 = 5.0;
-mod utils;
 mod types;
 mod type_impl;
 mod input_buffer;
@@ -42,44 +40,127 @@ impl Player {
             ],
             movement_input: 0.0,
             shoot_input: false,
+            curr_reload_time: 0.0,
         }
     }
 
     fn update(&mut self, dt: f32) {
         self.position.x += self.movement_input * self.speed * dt;
         self.position.x = self.position.x.clamp(20.0, screen_width() - 20.0);
-        if self.shoot_input {
-            // self.bullets.push(Bullet {
-            //     position: self.position,
-            //     velocity: vec2(0.0, -500.0),
-            // });
+        self.curr_reload_time += dt;
+        if self.shoot_input && self.curr_reload_time > RELOAD_TIME {
+            self.curr_reload_time = 0.0;
+            if
+                let Some(bullet) = self.bullets
+                    .iter_mut()
+                    .find(|b| (b.position.y <= 0.0 || b.position.y >= screen_height()))
+            {
+                bullet.position = self.position;
+                bullet.velocity = vec2(0.0, -500.0);
+            }
         }
+
         for bullet in &mut self.bullets {
-            bullet.position += bullet.velocity * dt;
+            if bullet.position.y > 0.0 && bullet.position.y < screen_height() {
+                bullet.position += bullet.velocity * dt;
+            } else {
+                bullet.position = vec2(-5.0, -5.0);
+            }
         }
-        // self.bullets.retain(|bullet| bullet.position.y > 0.0);
     }
 
     fn draw(&self) {
         draw_rectangle(self.position.x - 20.0, self.position.y - 10.0, 40.0, 20.0, self.color);
 
         for bullet in &self.bullets {
-            draw_circle(bullet.position.x, bullet.position.y, 5.0, WHITE);
+            draw_circle(bullet.position.x, bullet.position.y, BULLET_SIZE, WHITE);
         }
     }
 }
-
 impl Enemy {
     fn new(x: f32, y: f32) -> Self {
         Self {
             position: vec2(x, y),
         }
     }
+
+    fn new_random_at_top() -> Self {
+        Self {
+            position: vec2(rand::gen_range(40.0, screen_width() - 40.0), 0.0),
+        }
+    }
+
+    fn is_active(&self) -> bool {
+        self.position.y >= 0.0 && self.position.y < screen_height()
+    }
+
+    fn deactivate(&mut self) {
+        self.position = vec2(-5.0, -5.0);
+    }
+
     fn update(&mut self, dt: f32) {
         self.position.y += 100.0 * dt;
+        if self.position.y >= screen_height() {
+            self.deactivate();
+        }
     }
+
     fn draw(&self) {
-        draw_rectangle(self.position.x - 20.0, self.position.y - 20.0, 40.0, 40.0, RED);
+        if self.is_active() {
+            draw_rectangle(
+                self.position.x - 20.0,
+                self.position.y - 20.0,
+                ENEMY_SIZE,
+                ENEMY_SIZE,
+                RED
+            );
+        }
+    }
+
+    fn update_all(enemies: &mut [Enemy], dt: f32, frame: u32) {
+        let mut enemy_cnt = 0;
+
+        for enemy in enemies.iter_mut() {
+            if enemy.is_active() {
+                enemy_cnt += 1;
+                enemy.update(dt);
+            }
+        }
+
+        // Move active enemies to the front
+        enemies.sort_by_key(|enemy| !enemy.is_active());
+
+        if frame % 60 == 0 && enemy_cnt < MAX_ENEMIES {
+            enemies[enemy_cnt as usize] = Enemy::new_random_at_top();
+        }
+    }
+
+    fn check_intersection_bullets(
+        enemies: &mut [Enemy],
+        bullets: &[Bullet]
+    ) -> [bool; MAX_BULLETS] {
+        let mut collisions = [false; MAX_BULLETS];
+        for enemy in enemies.iter_mut().filter(|e| e.is_active()) {
+            for (i, bullet) in bullets.iter().enumerate() {
+                if
+                    enemy.position.distance(bullet.position) < (BULLET_SIZE + ENEMY_SIZE) / 2.0 &&
+                    !collisions[i]
+                {
+                    enemy.deactivate();
+                    collisions[i] = true;
+                }
+            }
+        }
+
+        collisions
+    }
+    fn draw_all(enemies: &[Enemy]) {
+        for enemy in enemies.iter() {
+            enemy.is_active();
+            {
+                enemy.draw();
+            }
+        }
     }
 }
 
@@ -94,25 +175,19 @@ impl Simulation {
         let enemies_arr_ptr = alloc
             .alloc_and_write_fixed(&[Enemy::new(-5.0, -5.0); MAX_ENEMIES as usize])
             .expect("Failed to alloc enemies");
-        let amount_of_enemies = alloc
-            .alloc_and_write_fixed(&(0 as u8))
-            .expect("Failed to alloc amount of enemies");
         let frame = alloc.alloc_and_write_fixed(&(0 as u32)).expect("Failed to alloc spawn timer");
         Self {
             player1: player_ptr,
             player2: player2_ptr,
-            amount_of_enemies: amount_of_enemies,
             enemies: enemies_arr_ptr,
             frame: frame,
         }
     }
     fn new_from_serialized(data: Vec<u8>, alloc: &mut PageAllocator) -> Self {
-        let mut sim = Self::new(alloc);
+        let sim = Self::new(alloc);
         alloc.set_memory(&data);
         return sim;
     }
-
-    fn add_player(&self, alloc: &mut PageAllocator) {}
 
     fn update(
         &self,
@@ -126,22 +201,38 @@ impl Simulation {
                 self.handle_player_input(player_id, inputs, alloc);
             }
         }
-        let enemy_amt = alloc.read_fixed(&self.amount_of_enemies);
+
+        let frame = alloc.read_fixed(&self.frame);
+        let player1 = alloc.read_fixed(&self.player1);
+        let player2 = alloc.read_fixed(&self.player2);
+
         let enemies = alloc.mut_read_fixed(&self.enemies);
-        for (i, enemy) in enemies.iter_mut().enumerate() {
-            if i < (enemy_amt as usize) {
-                enemy.update(dt);
-            }
-        }
-        // TODO update enemy_amt
+        Enemy::update_all(enemies, dt, frame);
+        let player1_bullet_collisions = Enemy::check_intersection_bullets(
+            enemies,
+            &player1.bullets
+        );
+        let player2_bullet_collisions = Enemy::check_intersection_bullets(
+            enemies,
+            &player2.bullets
+        );
+
         let player1 = alloc.mut_read_fixed(&self.player1);
         player1.update(dt);
+        for i in 0..player1_bullet_collisions.len() {
+            if player1_bullet_collisions[i] {
+                player1.bullets[i].position = vec2(-5.0, -5.0);
+            }
+        }
+
         let player2 = alloc.mut_read_fixed(&self.player2);
         player2.update(dt);
-        let frame = alloc.mut_read_fixed(&self.frame);
-        if *frame % 60 == 0 {
-            // spawn enemy
+        for i in 0..player2_bullet_collisions.len() {
+            if player2_bullet_collisions[i] {
+                player2.bullets[i].position = vec2(-5.0, -5.0);
+            }
         }
+        let frame = alloc.mut_read_fixed(&self.frame);
         *frame += 1;
     }
 
@@ -156,12 +247,8 @@ impl Simulation {
             alloc.read_fixed(&self.player1).draw();
             alloc.read_fixed(&self.player2).draw();
         }
-        let enemy_amount = alloc.read_fixed(&self.amount_of_enemies);
-        for (i, enemy) in alloc.read_fixed(&self.enemies).iter().enumerate() {
-            if i < (enemy_amount as usize) {
-                enemy.draw();
-            }
-        }
+        let enemies = alloc.read_fixed(&self.enemies);
+        Enemy::draw_all(&enemies);
     }
 
     fn handle_player_input(
@@ -359,7 +446,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     if is_key_down(KeyCode::D) {
                         curr_player.push(PlayerInput::Right);
                     }
-                    if is_key_pressed(KeyCode::W) {
+                    if is_key_down(KeyCode::W) {
                         curr_player.push(PlayerInput::Shoot);
                     }
                     if timer >= PHYSICS_FRAME_TIME {
@@ -390,22 +477,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 NetworkMessage::ServerSentPlayerInputs(inputs) => {
                                     for input in inputs.buffered_inputs {
                                         let other_player = input.inputs;
-                                        println!(
-                                            "received inputs from server frame : {:?}",
-                                            input.frame
-                                        );
-                                        println!(
-                                            "currently stuck at inp buffer [0] {:?}",
-                                            input_buffer.input_frames[0].frame
-                                        );
                                         input_buffer.insert_other_player_inp(
                                             other_player.clone(),
                                             input.frame
                                         );
-                                        // println!(
-                                        //     "after insertion inp buffer [0] {:?}",
-                                        //     input_buffer.input_frames
-                                        // );
                                     }
                                 }
                                 NetworkMessage::ServerRequestHostForWorldData => {
@@ -442,10 +517,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             )
                                         )
                                     )?;
-                                    // println!(
-                                    //     "sent state frame {} and input for + 1 of that ",
-                                    //     &pred_allocator.read_fixed(&predicted_simulation.frame)
-                                    // );
                                 }
                                 _ => {}
                             }
@@ -464,11 +535,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     )
                                 )?;
                             }
-                            // println!(
-                            //     "verif sim current frame is {} so +1  after, input frame {:?}",
-                            //     verif_allocator.read_fixed(&verified_simulation.frame),
-                            //     verif_frame_input
-                            // );
+
                             debug_assert!(
                                 verif_allocator.read_fixed(&verified_simulation.frame) + 1 ==
                                     verif_frame_input.frame,
@@ -509,11 +576,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         )
                                     )
                                 )?;
-                                // debug_assert!(
-                                //     pred_frame_input.inputs[local_player_id as usize].is_some(),
-                                //     "{:?}",
-                                //     pred_frame_input // should be some due to verified being base state
-                                // );
+
                                 debug_assert!(
                                     pred_allocator.read_fixed(&predicted_simulation.frame) + 1 ==
                                         pred_frame_input.frame,
@@ -530,7 +593,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     pred_allocator.read_fixed(&predicted_simulation.frame) ==
                                         pred_frame_input.frame
                                 );
-                                // println!("debug sim");
                             }
                         }
                     }

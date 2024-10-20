@@ -6,6 +6,9 @@ pub const MAX_UDP_PAYLOAD_LEN: usize = 508; // https://stackoverflow.com/questio
 pub const MAX_UDP_PAYLOAD_DATA_LENGTH: usize = MAX_UDP_PAYLOAD_LEN - DATA_BIT_START_POS;
 pub const MAX_BULLETS: usize = 5;
 pub const MAX_ENEMIES: usize = 20;
+pub const RELOAD_TIME: f32 = 0.5;
+pub const BULLET_SIZE: f32 = 5.0;
+pub const ENEMY_SIZE: f32 = 40.0;
 pub const AMT_RANDOM_BYTES: usize = 1;
 pub const RELIABLE_FLAG_BYTE_POS: usize = AMT_RANDOM_BYTES; // AMT random bytes starts with bit 0 so bit AMT_RANDOM_BYTES - 1 is last bit of it, and AMT_RANDOM_BYTES IS FREE
 pub const SEQ_NUM_BYTE_POS: usize = RELIABLE_FLAG_BYTE_POS + 1;
@@ -27,6 +30,7 @@ pub struct Player {
     pub bullets: [Bullet; MAX_BULLETS],
     pub movement_input: f32,
     pub shoot_input: bool,
+    pub curr_reload_time: f32,
 }
 #[derive(Copy, Clone)]
 pub struct Bullet {
@@ -41,7 +45,6 @@ pub struct Enemy {
 pub struct Simulation {
     pub player1: FixedDataPtr<Player>,
     pub player2: FixedDataPtr<Player>,
-    pub amount_of_enemies: FixedDataPtr<u8>,
     pub enemies: FixedDataPtr<[Enemy; MAX_ENEMIES]>,
     pub frame: FixedDataPtr<u32>,
 }
@@ -195,7 +198,7 @@ pub struct LogConfig {
     pub error: bool,
     pub debug: bool,
 }
-#[derive( Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct Logger {
     pub config: LogConfig,
     pub last_log_time: Option<Instant>,

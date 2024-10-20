@@ -1,17 +1,11 @@
-use std::char::MAX;
-use std::f32::MIN;
-use std::hash::Hash;
 use std::net::{ SocketAddr, UdpSocket };
 use std::collections::HashMap;
-use std::process::exit;
 use std::sync::mpsc;
 use std::thread;
 use std::time::{ Duration, Instant };
-use macroquad::input;
-use rand::{ seq, Rng };
+use rand::Rng;
 use types::{
     BufferedNetworkedPlayerInputs,
-    ChunkOfMessage,
     ChunkedMessageCollector,
     DeserializedMessage,
     DeserializedMessageType,
@@ -51,10 +45,10 @@ struct Server {
     logger: Logger,
 
     #[cfg(feature = "simulation_mode")]
-    msg_sender: mpsc::Sender<(Vec<u8>, SocketAddr)>, // Only included if feature is enabled
+    msg_sender: mpsc::Sender<(Vec<u8>, SocketAddr)>,
 
     #[cfg(feature = "simulation_mode")]
-    msg_rcv: mpsc::Receiver<(Vec<u8>, SocketAddr)>, // Only included if feature is enabled
+    msg_rcv: mpsc::Receiver<(Vec<u8>, SocketAddr)>,
 }
 
 impl Server {
