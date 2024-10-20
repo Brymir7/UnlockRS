@@ -1,0 +1,35 @@
+
+
+
+
+// implement chunking
+// implement reliable world state updating
+// implement usable inputs
+
+
+//implement simulation + updates on 2 clients
+
+
+
+# mandatory todo 
+
+
+- bullets
+- implement sending inputs in buffer instead of individual packets in network layer
+- implement SYNC check | by world state CRC / checksum
+- error correction for smoothing out visual
+
+- cleaner client.rs (better abstraction network vs client, shorter main function, easier multiplayer enabling / disabling) 
+
+todo _> significantly better memory allocator, even a bump allocator would be better
+todo! _> dynamic max packet length
+todo! _> dynamic connections, reconnections / resync when CRC invalid
+todo! _> encryption, verification using 2 keys 
+todo! _> 4 player multiplayer
+todo! _> more stable server
+
+
+
+
+
+cargo watch -w src/client.rs -w Cargo.toml -x 'run --bin server'
