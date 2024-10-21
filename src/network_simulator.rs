@@ -52,16 +52,19 @@ impl NetworkSimulator {
         }
     }
 
-    pub fn set_baseline_latency(&mut self, baseline_latency: u64) {
-        self.baseline_latency = baseline_latency;
+    pub fn modify_baseline_latency(&mut self, delta: i64) {
+        self.baseline_latency = ((self.baseline_latency as i64) + delta).max(0) as u64;
+        println!("New latency {}", self.baseline_latency);
     }
 
-    pub fn set_packet_loss(&mut self, packet_loss: f32) {
-        self.packet_loss = packet_loss;
+    pub fn modify_packet_loss(&mut self, delta: f32) {
+        self.packet_loss = (self.packet_loss + delta).clamp(0.0, 1.0);
+        println!("New packet loss {}", self.packet_loss);
     }
 
-    pub fn set_jitter(&mut self, jitter: u64) {
-        self.jitter = jitter;
+    pub fn modify_jitter(&mut self, delta: i64) {
+        self.jitter = ((self.jitter as i64) + delta).max(0) as u64;
+        println!("New jitter{}", self.jitter);
     }
 
     pub fn enqueue_rcv_message(&mut self, data: Vec<u8>, src: SocketAddr) {

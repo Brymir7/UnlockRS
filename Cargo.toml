@@ -6,7 +6,7 @@ edition = "2021"
 [dependencies]
 macroquad = "0.4.13"
 rand = "0.8.5"
-
+crossterm = { version = "*", optional = true }
 
 [[bin]]
 name = "server"
@@ -18,5 +18,5 @@ path = "src/game.rs"
 
 
 [features]
-simulation_mode = []
+simulation_mode = ["crossterm"]
 default = ["simulation_mode"]

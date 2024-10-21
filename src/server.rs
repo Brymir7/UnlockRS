@@ -32,6 +32,12 @@ const NETWORK_SIM_SEED: u64 = 12345;
 mod network_simulator;
 #[cfg(feature = "simulation_mode")]
 use crate::network_simulator::NetworkSimulator;
+#[cfg(feature = "simulation_mode")]
+use crossterm::{ event, terminal, ExecutableCommand };
+#[cfg(feature = "simulation_mode")]
+use crossterm::event::{ Event, KeyCode };
+#[cfg(feature = "simulation_mode")]
+use std::io::stdout;
 struct Server {
     socket: UdpSocket,
     player_to_addr: [Option<SocketAddr>; (u8::MAX as usize) + 1],
@@ -80,7 +86,42 @@ impl Server {
             ),
         }
     }
+    #[cfg(feature = "simulation_mode")]
+    pub fn run_w_attached_tui(&mut self) -> std::io::Result<()> {
+        use std::process::exit;
 
+        let mut stdout = stdout();
+        terminal::enable_raw_mode()?; // Enable raw mode for direct key event capture
+        stdout.execute(terminal::Clear(terminal::ClearType::All))?;
+        println!("Controls:");
+        println!("  'q' - Quit");
+        println!("  'l' - Increase baseline latency by 5");
+        println!("  'p' - Increase packet loss by 0.01");
+        println!("  'j' - Increase jitter by 5");
+        loop {
+            if event::poll(std::time::Duration::from_millis(0))? {
+                if let Event::Key(key_event) = event::read()? {
+                    match key_event.code {
+                        KeyCode::Char('q') => {
+                            exit(0);
+                        }
+                        KeyCode::Char('l') => {
+                            self.network_simulator.modify_baseline_latency(5);
+                        }
+                        KeyCode::Char('p') => {
+                            self.network_simulator.modify_packet_loss(0.01);
+                        }
+                        KeyCode::Char('j') => {
+                            self.network_simulator.modify_jitter(5);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+
+            self.update();
+        }
+    }
     pub fn update(&mut self) {
         self.msg_buffer.clear();
 
@@ -445,6 +486,9 @@ fn main() -> std::io::Result<()> {
     let mut server = Server::new();
     server.logger.message("Server started on 127.0.0.1:8080");
     loop {
+        #[cfg(feature = "simulation_mode")]
+        server.run_w_attached_tui()?;
+        #[cfg(not(feature = "simulation_mode"))]
         server.update();
     }
 }

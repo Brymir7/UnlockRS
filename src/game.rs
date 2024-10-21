@@ -491,7 +491,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 NetworkMessage::ServerSentPlayerInputs(inputs) => {
                                     for input in inputs.buffered_inputs {
                                         let other_player = input.inputs;
-                                        println!("inputs other player for frame {:?}", input.frame);
                                         input_buffer.insert_other_player_inp(
                                             other_player.clone(),
                                             input.frame
