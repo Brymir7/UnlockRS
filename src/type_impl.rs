@@ -600,6 +600,9 @@ impl ChunkedMessageCollector {
                         .iter()
                         .flat_map(|chunk| chunk.data_bytes[DATA_BIT_START_POS..].to_vec())
                         .collect();
+                    if msg[0].seq_num != msg[0].base_seq_num {
+                        return None;
+                    }
                     // debug_assert!(
                     //     msg[0].seq_num == msg[0].base_seq_num,
                     //     "msg 0 vs base seq num {:?} {:?}",
@@ -685,7 +688,6 @@ impl PlayerID {
         }
     }
 }
-use std::io::{ self, Write };
 impl BufferedNetworkedPlayerInputs {
     pub fn default() -> Self {
         BufferedNetworkedPlayerInputs {

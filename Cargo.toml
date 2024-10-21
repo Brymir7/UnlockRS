@@ -13,7 +13,7 @@ name = "server"
 path = "src/server.rs"
 
 [[bin]]
-name = "client"
+name = "game"
 path = "src/game.rs"
 
 

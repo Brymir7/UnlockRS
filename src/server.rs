@@ -1,14 +1,6 @@
-#[cfg(feature = "simulation_mode")]
-use std::cmp::Ordering;
 use std::net::{ SocketAddr, UdpSocket };
 use std::collections::HashMap;
-#[cfg(feature = "simulation_mode")]
-use std::collections::BinaryHeap;
 use std::time::{ Duration, Instant };
-use rand::rngs::StdRng;
-#[cfg(feature = "simulation_mode")]
-use rand::Rng;
-use rand::SeedableRng;
 use types::{
     BufferedNetworkedPlayerInputs,
     ChunkedMessageCollector,
@@ -31,108 +23,15 @@ mod memory;
 
 const MAX_RETRIES: u32 = 120;
 const RETRY_TIMEOUT: Duration = Duration::from_millis(16);
-const MIN_LATENCY: u64 = 20;
-const MAX_LATENCY: u64 = 100;
-const PACKET_LOSS: f32 = 0.0;
+const BASELINE_LATENCY: u64 = 20;
+const BASELINE_JITTER: u64 = 5;
+const BASELINE_PACKET_LOSS: f32 = 0.0;
 const NETWORK_SIM_SEED: u64 = 12345;
-#[cfg(feature = "simulation_mode")]
-#[derive(Clone)]
-struct DelayedMessage {
-    data: Vec<u8>,
-    addr: SocketAddr, // either src or dst
-    delivery_time: Instant,
-}
-
-// Custom ordering for min-heap (earlier delivery times come first)
-#[cfg(feature = "simulation_mode")]
-impl Ord for DelayedMessage {
-    fn cmp(&self, other: &Self) -> Ordering {
-        other.delivery_time.cmp(&self.delivery_time)
-    }
-}
-#[cfg(feature = "simulation_mode")]
-impl PartialOrd for DelayedMessage {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-#[cfg(feature = "simulation_mode")]
-impl PartialEq for DelayedMessage {
-    fn eq(&self, other: &Self) -> bool {
-        self.delivery_time == other.delivery_time
-    }
-}
-#[cfg(feature = "simulation_mode")]
-impl Eq for DelayedMessage {}
 
 #[cfg(feature = "simulation_mode")]
-struct NetworkSimulator {
-    receive_queue: BinaryHeap<DelayedMessage>,
-    send_queue: BinaryHeap<DelayedMessage>,
-    rng: rand::rngs::StdRng,
-}
+mod network_simulator;
 #[cfg(feature = "simulation_mode")]
-impl NetworkSimulator {
-    fn new(seed: u64) -> Self {
-        Self {
-            receive_queue: BinaryHeap::new(),
-            send_queue: BinaryHeap::new(),
-            rng: StdRng::seed_from_u64(seed),
-        }
-    }
-
-    fn enqueue_rcv_message(&mut self, data: Vec<u8>, src: SocketAddr) {
-        if self.rng.gen::<f32>() >= PACKET_LOSS {
-            let delay = self.rng.gen_range(MIN_LATENCY..=MAX_LATENCY);
-            let delivery_time = Instant::now() + Duration::from_millis(delay);
-
-            self.receive_queue.push(DelayedMessage {
-                data,
-                addr: src,
-                delivery_time,
-            });
-        }
-    }
-
-    fn enqueue_send_message(&mut self, data: Vec<u8>, dst: SocketAddr) {
-        if self.rng.gen::<f32>() >= PACKET_LOSS {
-            let delay = self.rng.gen_range(MIN_LATENCY..=MAX_LATENCY);
-            let delivery_time = Instant::now() + Duration::from_millis(delay);
-
-            self.send_queue.push(DelayedMessage {
-                data,
-                addr: dst,
-                delivery_time,
-            });
-        }
-    }
-
-    fn get_ready_receive_messages(&mut self) -> Vec<(Vec<u8>, SocketAddr)> {
-        NetworkSimulator::get_ready_messages(&mut self.receive_queue)
-    }
-
-    fn get_ready_send_messages(&mut self) -> Vec<(Vec<u8>, SocketAddr)> {
-        NetworkSimulator::get_ready_messages(&mut self.send_queue)
-    }
-
-    fn get_ready_messages(queue: &mut BinaryHeap<DelayedMessage>) -> Vec<(Vec<u8>, SocketAddr)> {
-        let now = Instant::now();
-        let mut ready_messages = Vec::new();
-
-        while let Some(message) = queue.peek() {
-            if message.delivery_time <= now {
-                if let Some(msg) = queue.pop() {
-                    ready_messages.push((msg.data, msg.addr));
-                }
-            } else {
-                break;
-            }
-        }
-
-        ready_messages
-    }
-}
-
+use crate::network_simulator::NetworkSimulator;
 struct Server {
     socket: UdpSocket,
     player_to_addr: [Option<SocketAddr>; (u8::MAX as usize) + 1],
@@ -173,7 +72,12 @@ impl Server {
             unack_input_seq_nums_to_frame: HashMap::new(),
             logger: Logger::new(LogConfig::default()),
             #[cfg(feature = "simulation_mode")]
-            network_simulator: NetworkSimulator::new(NETWORK_SIM_SEED),
+            network_simulator: NetworkSimulator::new(
+                NETWORK_SIM_SEED,
+                BASELINE_LATENCY,
+                BASELINE_JITTER,
+                BASELINE_PACKET_LOSS
+            ),
         }
     }
 
@@ -493,16 +397,6 @@ impl Server {
 
                                 #[cfg(feature = "simulation_mode")]
                                 {
-                                    if let Some(target) = self.addr_to_player.get(&target) {
-                                        if target.0 == 1 {
-                                            self.logger.message(
-                                                format!(
-                                                    "INput buffer for player id 2 {:?}",
-                                                    inp_buffer.buffered_inputs
-                                                )
-                                            );
-                                        }
-                                    }
                                     self.logger.debug("Enqueued player inputs");
                                     self.network_simulator.enqueue_send_message(
                                         msg.bytes.clone(),

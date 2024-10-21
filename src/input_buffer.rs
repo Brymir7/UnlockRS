@@ -16,9 +16,7 @@ impl PlayerInputs {
     }
 
     fn insert_player_input(&mut self, input: Vec<PlayerInput>, player_id: PlayerID) {
-        // println!("input before {:?}", self.inputs);
         self.inputs[player_id as usize] = Some(input);
-        // println!("input before {:?}", self.inputs);
     }
 
     pub fn is_verified(&self, local_player: PlayerID, player_count: u8) -> bool {
