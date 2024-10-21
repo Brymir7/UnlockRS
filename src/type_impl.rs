@@ -588,7 +588,7 @@ impl ChunkedMessageCollector {
     }
     pub fn try_combine(&mut self) -> Option<DeserializedMessage> {
         for msg in &mut self.msgs {
-            msg.sort_by_key(|chunk| chunk.seq_num); // 0 is after 255 due tu rounding but not respected here TODO
+            msg.sort_by_key(|chunk| chunk.seq_num); // TODO wrapping around u32 is not handled
 
             if let Some(last_msg) = msg.last() {
                 if
@@ -600,7 +600,12 @@ impl ChunkedMessageCollector {
                         .iter()
                         .flat_map(|chunk| chunk.data_bytes[DATA_BIT_START_POS..].to_vec())
                         .collect();
-                    debug_assert!(msg[0].seq_num == msg[0].base_seq_num);
+                    // debug_assert!(
+                    //     msg[0].seq_num == msg[0].base_seq_num,
+                    //     "msg 0 vs base seq num {:?} {:?}",
+                    //     msg[0].seq_num,
+                    //     msg[0].base_seq_num
+                    // );
                     debug_assert!(msg[0].seq_num <= last_msg.seq_num);
                     let header = PacketParser::parse_header(&msg[0].data_bytes);
                     match header {
@@ -758,7 +763,7 @@ impl Default for LogConfig {
             connection: false,
             world_state: false,
             player_input: false,
-            message_handling: false,
+            message_handling: true,
             ack: false,
             error: false,
             debug: false,

@@ -34,7 +34,7 @@ pub struct ConnectionServer {
     socket: Arc<UdpSocket>,
     sequence_number: SeqNumGenerator,
     pending_acks: HashMap<SeqNum, (Instant, SerializedNetworkMessage)>,
-    server_msg_sender: mpsc::Sender<NetworkMessage>,
+    network_to_game: mpsc::Sender<NetworkMessage>,
     client_request_receiver: mpsc::Receiver<GameRequestToNetwork>,
     ack_sender: mpsc::Sender<SeqNum>,
     ack_receiver: mpsc::Receiver<SeqNum>,
@@ -68,7 +68,7 @@ impl ConnectionServer {
                     seq_num: SeqNum(0),
                 },
                 pending_acks: HashMap::new(),
-                server_msg_sender: response_sender,
+                network_to_game: response_sender,
                 client_request_receiver: request_receiver,
                 ack_sender,
                 ack_receiver,
@@ -142,15 +142,10 @@ impl ConnectionServer {
                 match msg {
                     NetworkMessage::ServerSentWorld(data) => {
                         println!("server sent world arrived");
-                        let _ = self.server_msg_sender.send(NetworkMessage::ServerSentWorld(data));
+                        let _ = self.network_to_game.send(NetworkMessage::ServerSentWorld(data));
                     }
                     NetworkMessage::ServerSentPlayerInputs(inputs) => {
-                        // debug_assert!(
-                        //     inputs.buffered_inputs.windows(2).all(|w| w[0].frame + 1 == w[1].frame),
-                        //     "Frames are not in order or there are gaps"
-                        // );
-
-                        let _ = self.server_msg_sender.send(
+                        let _ = self.network_to_game.send(
                             NetworkMessage::ServerSentPlayerInputs(inputs)
                         );
                     }
@@ -159,12 +154,12 @@ impl ConnectionServer {
                         LOGGER.log_received_ack(acked_seq_num.0);
                     }
                     NetworkMessage::ServerSentPlayerIDs(ids) => {
-                        let _ = self.server_msg_sender.send(
+                        let _ = self.network_to_game.send(
                             NetworkMessage::ServerSentPlayerIDs(ids)
                         );
                     }
                     NetworkMessage::ServerRequestHostForWorldData => {
-                        let _ = self.server_msg_sender.send(
+                        let _ = self.network_to_game.send(
                             NetworkMessage::ServerRequestHostForWorldData
                         );
                     }
@@ -213,7 +208,7 @@ impl ConnectionServer {
                                 GameMessage::ClientSentPlayerInputs(inp) => {
                                     if let Err(e) = self.send_player_inputs(inp) {
                                         let error = match e {
-                                            SendInputsError::Disconnected => { "disconnected" }
+                                            SendInputsError::Disconnected => { "couldn't reach other player" }
                                             SendInputsError::IO(io_e) => { &io_e.to_string() }
                                         };
                                         eprintln!("Error sending player inputs: {:?}", error);

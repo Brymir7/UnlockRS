@@ -460,7 +460,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     if is_key_down(KeyCode::D) || is_key_down(KeyCode::Right) {
                         curr_player.push(PlayerInput::Right);
                     }
-                    if is_key_down(KeyCode::W) || is_key_down(KeyCode::Up){
+                    if is_key_down(KeyCode::W) || is_key_down(KeyCode::Up) {
                         curr_player.push(PlayerInput::Shoot);
                     }
                     if timer >= PHYSICS_FRAME_TIME {
@@ -491,6 +491,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 NetworkMessage::ServerSentPlayerInputs(inputs) => {
                                     for input in inputs.buffered_inputs {
                                         let other_player = input.inputs;
+                                        println!("inputs other player for frame {:?}", input.frame);
                                         input_buffer.insert_other_player_inp(
                                             other_player.clone(),
                                             input.frame

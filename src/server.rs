@@ -33,7 +33,7 @@ const MAX_RETRIES: u32 = 120;
 const RETRY_TIMEOUT: Duration = Duration::from_millis(16);
 const MIN_LATENCY: u64 = 20;
 const MAX_LATENCY: u64 = 100;
-const PACKET_LOSS: f32 = 0.01;
+const PACKET_LOSS: f32 = 0.0;
 const NETWORK_SIM_SEED: u64 = 12345;
 #[cfg(feature = "simulation_mode")]
 #[derive(Clone)]
@@ -94,14 +94,14 @@ impl NetworkSimulator {
         }
     }
 
-    fn enqueue_send_message(&mut self, data: Vec<u8>, src: SocketAddr) {
+    fn enqueue_send_message(&mut self, data: Vec<u8>, dst: SocketAddr) {
         if self.rng.gen::<f32>() >= PACKET_LOSS {
             let delay = self.rng.gen_range(MIN_LATENCY..=MAX_LATENCY);
             let delivery_time = Instant::now() + Duration::from_millis(delay);
 
             self.send_queue.push(DelayedMessage {
                 data,
-                addr: src,
+                addr: dst,
                 delivery_time,
             });
         }
@@ -140,7 +140,10 @@ struct Server {
     pending_chunked_msgs: HashMap<SocketAddr, ChunkedMessageCollector>,
     connections: HashMap<SocketAddr, Vec<SocketAddr>>,
     msg_buffer: MsgBuffer,
-    pending_acks: HashMap<SocketAddr, HashMap<SeqNum, (Instant, SerializedNetworkMessage)>>,
+    non_input_pending_acks: HashMap<
+        SocketAddr,
+        HashMap<SeqNum, (Instant, SerializedNetworkMessage)>
+    >,
     sequence_number: SeqNumGenerator,
     unack_input_seq_nums_to_frame: HashMap<SocketAddr, HashMap<SeqNum, u32>>,
     unack_input_buffer: HashMap<SocketAddr, BufferedNetworkedPlayerInputs>,
@@ -162,7 +165,7 @@ impl Server {
             connections: HashMap::new(),
             pending_chunked_msgs: HashMap::new(),
             msg_buffer,
-            pending_acks: HashMap::new(),
+            non_input_pending_acks: HashMap::new(),
             sequence_number: SeqNumGenerator {
                 seq_num: SeqNum(0),
             },
@@ -191,7 +194,7 @@ impl Server {
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
                 Err(e) => {
-                    eprintln!("Error receiving data: {}", e);
+                    self.logger.error(e);
                 }
             }
             for (data, src) in self.network_simulator.get_ready_receive_messages() {
@@ -259,7 +262,7 @@ impl Server {
     pub fn handle_retransmissions(&mut self) {
         let now = Instant::now();
         let mut to_retry = Vec::new();
-        for (client_addr, pending_messages) in &mut self.pending_acks {
+        for (client_addr, pending_messages) in &mut self.non_input_pending_acks {
             for (seq, (sent_time, message)) in pending_messages {
                 if now.duration_since(*sent_time) > RETRY_TIMEOUT {
                     to_retry.push((*client_addr, *seq, message.clone()));
@@ -267,7 +270,7 @@ impl Server {
             }
         }
         for (client_addr, seq, message) in to_retry {
-            if let Some(pending_messages) = self.pending_acks.get_mut(&client_addr) {
+            if let Some(pending_messages) = self.non_input_pending_acks.get_mut(&client_addr) {
                 if let Some((ref mut sent_time, _)) = pending_messages.get_mut(&seq) {
                     *sent_time = now;
                     match self.socket.send_to(&message.bytes, client_addr) {
@@ -291,7 +294,7 @@ impl Server {
             }
         }
 
-        let _ = self.pending_acks.iter_mut().map(|(_, pending_messages)| {
+        let _ = self.non_input_pending_acks.iter_mut().map(|(_, pending_messages)| {
             pending_messages.retain(|seq, (sent_time, _)| {
                 let resend = now.duration_since(*sent_time) < RETRY_TIMEOUT * MAX_RETRIES;
                 if !resend {
@@ -307,7 +310,7 @@ impl Server {
         let new_id = ServerPlayerID(self.addr_to_player.len() as u8);
         self.addr_to_player.insert(*addr, new_id);
         self.player_to_addr[new_id.0 as usize] = Some(*addr);
-        self.pending_acks.insert(*addr, HashMap::new());
+        self.non_input_pending_acks.insert(*addr, HashMap::new());
         self.pending_chunked_msgs.insert(*addr, ChunkedMessageCollector::default());
         self.unack_input_buffer.insert(*addr, BufferedNetworkedPlayerInputs {
             buffered_inputs: Vec::new(),
@@ -385,8 +388,8 @@ impl Server {
     }
 
     pub fn handle_clients_ack(&mut self, seq_num: SeqNum, src: &SocketAddr) {
-        if let Some(pending_messages) = self.pending_acks.get_mut(src) {
-            if pending_messages.remove(&seq_num).is_some() {
+        if let Some(non_inp_pending_messages) = self.non_input_pending_acks.get_mut(src) {
+            if non_inp_pending_messages.remove(&seq_num).is_some() {
                 self.logger.ack(
                     format!("Acknowledged message {:?} from client {:?}", seq_num, src)
                 );
@@ -395,7 +398,7 @@ impl Server {
             }
         } else {
             self.logger.error(format!("Received acknowledgment from unknown client {:?}", src));
-            self.logger.debug(format!("Pending acks: {:?}", self.pending_acks));
+            self.logger.debug(format!("Pending acks: {:?}", self.non_input_pending_acks));
         }
     }
 
@@ -435,7 +438,7 @@ impl Server {
                             format!("Failed to send reliable message to {:?}: {}", dst, e)
                         );
                     }
-                    self.pending_acks
+                    self.non_input_pending_acks
                         .entry(*dst)
                         .or_insert_with(HashMap::new)
                         .insert(seq_num, (Instant::now(), SerializedNetworkMessage { bytes: msg }));
@@ -443,7 +446,7 @@ impl Server {
             }
             SerializedMessageType::NonChunked(serialized_msg) => {
                 let seq_num = self.sequence_number.get_seq_num();
-                self.pending_acks
+                self.non_input_pending_acks
                     .entry(*dst)
                     .or_insert_with(HashMap::new)
                     .insert(seq_num, (Instant::now(), serialized_msg.clone()));
@@ -474,12 +477,12 @@ impl Server {
 
             match msg {
                 SerializedMessageType::NonChunked(msg) => {
-                    for addr in connections.clone() {
-                        if let Some(inp_buffer) = self.unack_input_buffer.get_mut(&addr) {
+                    for target in connections.clone() {
+                        if let Some(inp_buffer) = self.unack_input_buffer.get_mut(&target) {
                             inp_buffer.bulk_insert_player_input(inputs.clone());
                             if
                                 let Some(seq_num_to_frame) =
-                                    self.unack_input_seq_nums_to_frame.get_mut(&addr)
+                                    self.unack_input_seq_nums_to_frame.get_mut(&target)
                             {
                                 seq_num_to_frame.insert(
                                     seq_num,
@@ -490,16 +493,26 @@ impl Server {
 
                                 #[cfg(feature = "simulation_mode")]
                                 {
+                                    if let Some(target) = self.addr_to_player.get(&target) {
+                                        if target.0 == 1 {
+                                            self.logger.message(
+                                                format!(
+                                                    "INput buffer for player id 2 {:?}",
+                                                    inp_buffer.buffered_inputs
+                                                )
+                                            );
+                                        }
+                                    }
                                     self.logger.debug("Enqueued player inputs");
                                     self.network_simulator.enqueue_send_message(
                                         msg.bytes.clone(),
-                                        addr
+                                        target
                                     );
                                 }
 
                                 #[cfg(not(feature = "simulation_mode"))]
                                 {
-                                    if let Err(e) = self.socket.send_to(&msg.bytes, addr) {
+                                    if let Err(e) = self.socket.send_to(&msg.bytes, target) {
                                         self.logger.error(
                                             format!("Failed to send input message: {}", e)
                                         );
