@@ -1,9 +1,14 @@
+#[cfg(feature = "simulation_mode")]
+use std::cmp::Ordering;
 use std::net::{ SocketAddr, UdpSocket };
 use std::collections::HashMap;
-use std::sync::mpsc;
-use std::thread;
+#[cfg(feature = "simulation_mode")]
+use std::collections::BinaryHeap;
 use std::time::{ Duration, Instant };
+use rand::rngs::StdRng;
+#[cfg(feature = "simulation_mode")]
 use rand::Rng;
+use rand::SeedableRng;
 use types::{
     BufferedNetworkedPlayerInputs,
     ChunkedMessageCollector,
@@ -18,7 +23,6 @@ use types::{
     SerializedMessageType,
     SerializedNetworkMessage,
     ServerPlayerID,
-    MAX_UDP_PAYLOAD_LEN,
     SEQ_NUM_BYTE_POS,
 };
 mod type_impl;
@@ -30,6 +34,104 @@ const RETRY_TIMEOUT: Duration = Duration::from_millis(16);
 const MIN_LATENCY: u64 = 20;
 const MAX_LATENCY: u64 = 100;
 const PACKET_LOSS: f32 = 0.01;
+const NETWORK_SIM_SEED: u64 = 12345;
+#[cfg(feature = "simulation_mode")]
+#[derive(Clone)]
+struct DelayedMessage {
+    data: Vec<u8>,
+    addr: SocketAddr, // either src or dst
+    delivery_time: Instant,
+}
+
+// Custom ordering for min-heap (earlier delivery times come first)
+#[cfg(feature = "simulation_mode")]
+impl Ord for DelayedMessage {
+    fn cmp(&self, other: &Self) -> Ordering {
+        other.delivery_time.cmp(&self.delivery_time)
+    }
+}
+#[cfg(feature = "simulation_mode")]
+impl PartialOrd for DelayedMessage {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+#[cfg(feature = "simulation_mode")]
+impl PartialEq for DelayedMessage {
+    fn eq(&self, other: &Self) -> bool {
+        self.delivery_time == other.delivery_time
+    }
+}
+#[cfg(feature = "simulation_mode")]
+impl Eq for DelayedMessage {}
+
+#[cfg(feature = "simulation_mode")]
+struct NetworkSimulator {
+    receive_queue: BinaryHeap<DelayedMessage>,
+    send_queue: BinaryHeap<DelayedMessage>,
+    rng: rand::rngs::StdRng,
+}
+#[cfg(feature = "simulation_mode")]
+impl NetworkSimulator {
+    fn new(seed: u64) -> Self {
+        Self {
+            receive_queue: BinaryHeap::new(),
+            send_queue: BinaryHeap::new(),
+            rng: StdRng::seed_from_u64(seed),
+        }
+    }
+
+    fn enqueue_rcv_message(&mut self, data: Vec<u8>, src: SocketAddr) {
+        if self.rng.gen::<f32>() >= PACKET_LOSS {
+            let delay = self.rng.gen_range(MIN_LATENCY..=MAX_LATENCY);
+            let delivery_time = Instant::now() + Duration::from_millis(delay);
+
+            self.receive_queue.push(DelayedMessage {
+                data,
+                addr: src,
+                delivery_time,
+            });
+        }
+    }
+
+    fn enqueue_send_message(&mut self, data: Vec<u8>, src: SocketAddr) {
+        if self.rng.gen::<f32>() >= PACKET_LOSS {
+            let delay = self.rng.gen_range(MIN_LATENCY..=MAX_LATENCY);
+            let delivery_time = Instant::now() + Duration::from_millis(delay);
+
+            self.send_queue.push(DelayedMessage {
+                data,
+                addr: src,
+                delivery_time,
+            });
+        }
+    }
+
+    fn get_ready_receive_messages(&mut self) -> Vec<(Vec<u8>, SocketAddr)> {
+        NetworkSimulator::get_ready_messages(&mut self.receive_queue)
+    }
+
+    fn get_ready_send_messages(&mut self) -> Vec<(Vec<u8>, SocketAddr)> {
+        NetworkSimulator::get_ready_messages(&mut self.send_queue)
+    }
+
+    fn get_ready_messages(queue: &mut BinaryHeap<DelayedMessage>) -> Vec<(Vec<u8>, SocketAddr)> {
+        let now = Instant::now();
+        let mut ready_messages = Vec::new();
+
+        while let Some(message) = queue.peek() {
+            if message.delivery_time <= now {
+                if let Some(msg) = queue.pop() {
+                    ready_messages.push((msg.data, msg.addr));
+                }
+            } else {
+                break;
+            }
+        }
+
+        ready_messages
+    }
+}
 
 struct Server {
     socket: UdpSocket,
@@ -43,21 +145,16 @@ struct Server {
     unack_input_seq_nums_to_frame: HashMap<SocketAddr, HashMap<SeqNum, u32>>,
     unack_input_buffer: HashMap<SocketAddr, BufferedNetworkedPlayerInputs>,
     logger: Logger,
-
     #[cfg(feature = "simulation_mode")]
-    msg_sender: mpsc::Sender<(Vec<u8>, SocketAddr)>,
-
-    #[cfg(feature = "simulation_mode")]
-    msg_rcv: mpsc::Receiver<(Vec<u8>, SocketAddr)>,
+    network_simulator: NetworkSimulator,
 }
 
 impl Server {
     pub fn new() -> Self {
         let addr_to_player: HashMap<SocketAddr, ServerPlayerID> = HashMap::new();
         let socket = UdpSocket::bind("127.0.0.1:8080").expect("Server Failed to bind socket.");
+        socket.set_nonblocking(true).expect("Failed to set socket to non blocking");
         let msg_buffer: MsgBuffer = MsgBuffer::default();
-        #[cfg(feature = "simulation_mode")]
-        let msg_channel = mpsc::channel();
         Server {
             socket,
             addr_to_player,
@@ -72,11 +169,8 @@ impl Server {
             unack_input_buffer: HashMap::new(),
             unack_input_seq_nums_to_frame: HashMap::new(),
             logger: Logger::new(LogConfig::default()),
-
             #[cfg(feature = "simulation_mode")]
-            msg_sender: msg_channel.0,
-            #[cfg(feature = "simulation_mode")]
-            msg_rcv: msg_channel.1,
+            network_simulator: NetworkSimulator::new(NETWORK_SIM_SEED),
         }
     }
 
@@ -85,31 +179,22 @@ impl Server {
 
         #[cfg(feature = "simulation_mode")]
         {
-            let socket = self.socket.try_clone().expect("Failed to clone socket");
-            let mut buffer = [0; MAX_UDP_PAYLOAD_LEN];
-            let mut logger = self.logger.clone();
-            let msg_sender = self.msg_sender.clone();
-            match socket.recv_from(&mut buffer) {
-                Ok((size, src)) => {
-                    let mut rng = rand::thread_rng();
-                    logger.debug_log_time("Received msg now!");
-                    if rng.gen::<f32>() >= PACKET_LOSS {
-                        let delay = rng.gen_range(MIN_LATENCY..=MAX_LATENCY);
-                        thread::spawn(move || {
-                            thread::sleep(Duration::from_millis(delay));
-                            msg_sender
-                                .send((buffer[..size].to_vec(), src))
-                                .expect("Failed to send to channel");
-                        });
-                    }
+            for (data, dst) in self.network_simulator.get_ready_send_messages() {
+                if let Err(e) = self.socket.send_to(&data, dst) {
+                    self.logger.error(e);
+                }
+            }
+            match self.socket.recv_from(&mut self.msg_buffer.0) {
+                Ok((_, src)) => {
+                    self.logger.debug_log_time("Received msg now!");
+                    self.network_simulator.enqueue_rcv_message(self.msg_buffer.0.to_vec(), src);
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
                 Err(e) => {
                     eprintln!("Error receiving data: {}", e);
                 }
             }
-
-            if let Ok((data, src)) = self.msg_rcv.try_recv() {
+            for (data, src) in self.network_simulator.get_ready_receive_messages() {
                 self.msg_buffer.0[..data.len()].copy_from_slice(&data);
 
                 if !self.addr_to_player.contains_key(&src) {
@@ -120,11 +205,11 @@ impl Server {
                 if let Ok(server_side_msg) = msg {
                     match server_side_msg {
                         DeserializedMessageType::NonChunked(server_side_msg) => {
-                            logger.debug_log_time("Handling msg now!");
+                            self.logger.debug_log_time("Handling msg now!");
                             self.handle_message(server_side_msg, &src);
                         }
                         DeserializedMessageType::ChunkOfMessage(chunk) => {
-                            logger.debug_log_time("Handling msg now!");
+                            self.logger.debug_log_time("Handling msg now!");
                             self.send_ack(SeqNum(chunk.seq_num), &src);
                             if let Some(collector) = self.pending_chunked_msgs.get_mut(&src) {
                                 collector.collect(chunk);
@@ -405,30 +490,11 @@ impl Server {
 
                                 #[cfg(feature = "simulation_mode")]
                                 {
-                                    let socket = self.socket
-                                        .try_clone()
-                                        .expect("Failed to clone socket");
-                                    let msg_bytes = msg.bytes.clone();
-                                    let dst = addr;
-                                    let mut logger = self.logger.clone();
-                                    logger.debug_log_time(format!("Simulating latency message"));
-                                    thread::spawn(move || {
-                                        let mut rng = rand::thread_rng();
-                                        if rng.gen::<f32>() < PACKET_LOSS {
-                                            return;
-                                        }
-                                        thread::sleep(
-                                            Duration::from_millis(
-                                                rng.gen_range(MIN_LATENCY..=MAX_LATENCY)
-                                            )
-                                        );
-                                        logger.debug_log_time(
-                                            format!("Simulating latency message")
-                                        );
-                                        if let Err(e) = socket.send_to(&msg_bytes, dst) {
-                                            eprintln!("Failed to send input message: {}", e);
-                                        }
-                                    });
+                                    self.logger.debug("Enqueued player inputs");
+                                    self.network_simulator.enqueue_send_message(
+                                        msg.bytes.clone(),
+                                        addr
+                                    );
                                 }
 
                                 #[cfg(not(feature = "simulation_mode"))]
