@@ -93,6 +93,12 @@ impl Server {
         let mut stdout = stdout();
         terminal::enable_raw_mode()?; // Enable raw mode for direct key event capture
         stdout.execute(terminal::Clear(terminal::ClearType::All))?;
+        println!(
+            "Baseline Settings:  Packet Loss: {:?}; Minimum Latency: {:?}; Jitter (random latency on top of minimum): {:?}",
+            BASELINE_PACKET_LOSS,
+            BASELINE_LATENCY,
+            BASELINE_JITTER
+        );
         println!("Controls:");
         println!("  'q' - Quit");
         println!("  'l' - Increase baseline latency by 5");
