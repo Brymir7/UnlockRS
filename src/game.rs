@@ -537,12 +537,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                         let mut new_verified_state = false;
                         while let Some(verif_frame_input) = input_buffer.pop_next_verified_frame() {
+                            // if we are ahead, then we will wait for the other player,
+                            // if we are behind we need to be able to  simulate based solely on the other players, because otherwise we will never catchup
+                            // therefore each verified frame is based only on whether we have inputs from all other players regardless of our inputs
                             if verif_frame_input.inputs[local_player_id as usize].is_none() {
                                 request_sender.send(
                                     types::GameRequestToNetwork::IndirectRequest(
                                         types::GameMessage::ClientSentPlayerInputs(
                                             NetworkedPlayerInput::new(
-                                                curr_player.clone(),
+                                                // take closest input we have)
+                                                Vec::new(), // send empty inputs as we didnt play for this frame yet
                                                 verif_frame_input.frame
                                             )
                                         )
@@ -578,7 +582,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             if
                                 pred_allocator.read_fixed(&predicted_simulation.frame) < // by doing this we exclude verified automatically as it would be in the .frame from verified update above
                                 pred_frame_input.frame
-                                // if we need to play catchup we cannot afford to wait for this players input as we would stay behind
                             {
                                 request_sender.send(
                                     types::GameRequestToNetwork::IndirectRequest(

@@ -200,17 +200,6 @@ impl InputBuffer {
         (0..self.input_frames.len()).filter_map(|index| {
             let frame_input = &self.input_frames[index];
             let mut new_input = frame_input.clone();
-
-            // BELOW SHOULD BE HANDLED BY the loop that calls this, by checking for frame
-
-            // if new_input.is_verified(self.player_count) {
-            //     // TODO VERIFY WE DONT NEED THIS
-            //     // if our input is None it means the other sim is ahead of us and we can skip this for now ||
-            //     //new_input.inputs[self.local_player as usize].is_none()
-            //     println!("frame num of verified{}", new_input.frame);
-            //     return None;
-            // }
-            //println!("input is verified {}", new_input.is_verified(self.player_count));
             for (player_id, input) in new_input.inputs.iter_mut().enumerate() {
                 if input.is_some() {
                     continue;
